@@ -1,0 +1,40 @@
+node_modules/
+dist/
+dist-server/
+*.tsbuildinfo
+coverage/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Paid assets - must be purchased separately
+assets/pixelart/Office Tileset/
+assets/pixelart/office-map.png
+
+# Agent identity / runtime
+.claude/
+.openclaw/
+.superpowers/
+.cursor/
+tmp/
+.setup-done
+
+# Runtime state (DB, results, settings)
+state/
+.agent-office/
