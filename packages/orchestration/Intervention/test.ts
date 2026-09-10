@@ -31,6 +31,14 @@ const interventions = new InterventionService(
   escalations
 );
 
+let interventionEvents = 0;
+interventions.events.on("intervention.created", (record) => {
+  if (!interventions.get(record.id)) {
+    throw new Error("Intervention event preceded persistence");
+  }
+  interventionEvents += 1;
+});
+
 const approvedEscalation = escalations.escalate({
   id: "escalation-approved",
   managerId: manager.id,
@@ -72,6 +80,10 @@ if (
   throw new Error("Expected manager intervention notification");
 }
 
+if (interventionEvents !== 1) {
+  throw new Error("Expected intervention.created event");
+}
+
 const pendingEscalation = escalations.escalate({
   id: "escalation-pending",
   managerId: manager.id,
@@ -95,6 +107,10 @@ if (
 ) {
   throw new Error("Expected pending escalation denial");
 }
+
+  if (interventionEvents !== 1) {
+    throw new Error("Denied intervention emitted an event");
+  }
 
 const rejectedEscalation = escalations.escalate({
   id: "escalation-rejected",

@@ -25,6 +25,20 @@ const escalation = new EscalationService(
   messages
 );
 
+let createdEvents = 0;
+let approvedEvents = 0;
+let rejectedEvents = 0;
+
+escalation.events.on("escalation.created", () => {
+  createdEvents += 1;
+});
+escalation.events.on("escalation.approved", () => {
+  approvedEvents += 1;
+});
+escalation.events.on("escalation.rejected", () => {
+  rejectedEvents += 1;
+});
+
 const pending = escalation.escalate({
   id: "escalation-001",
   managerId: manager.id,
@@ -40,6 +54,10 @@ if (
   pending.approval.status !== "pending"
 ) {
   throw new Error("Expected valid escalation to be pending");
+}
+
+if (createdEvents !== 1) {
+  throw new Error("Expected escalation.created event");
 }
 
 if (
@@ -58,6 +76,10 @@ if (unauthorizedApproval.decision !== "DENY") {
   throw new Error("Expected unrelated Boss approval to be denied");
 }
 
+if (approvedEvents !== 0) {
+  throw new Error("Unauthorized approval emitted an event");
+}
+
 const approved = escalation.approveEscalation(
   pending.escalation.id,
   boss.id
@@ -69,6 +91,10 @@ if (
   approved.message?.toAgentId !== manager.id
 ) {
   throw new Error("Expected assigned Boss approval");
+}
+
+if (Number(approvedEvents) !== 1) {
+  throw new Error("Expected escalation.approved event");
 }
 
 const nonManager = escalation.escalate({
@@ -93,6 +119,10 @@ const unrelatedBoss = escalation.escalate({
 
 if (unrelatedBoss.decision !== "DENY") {
   throw new Error("Expected unrelated Boss escalation to be denied");
+}
+
+if (createdEvents !== 1) {
+  throw new Error("Invalid escalations emitted created events");
 }
 
 const missingTask = escalation.escalate({
@@ -141,6 +171,10 @@ if (
   rejected.approval?.status !== "rejected"
 ) {
   throw new Error("Expected assigned Boss rejection");
+}
+
+if (Number(createdEvents) !== 2 || Number(rejectedEvents) !== 1) {
+  throw new Error("Expected escalation.rejected event");
 }
 
 if (

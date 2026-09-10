@@ -3,6 +3,7 @@ import type { Task } from "../../core/Task";
 import type { A2AMessage } from "../../messaging/A2A";
 import { AgentMessageService } from "../../messaging/AgentMessages";
 import { AgentRegistry } from "../../agents/AgentRegistry";
+import { EventBus } from "../../messaging/EventBus";
 import { TaskDispatcher } from "../TaskDispatcher";
 import { DelegationService } from "../Delegation";
 
@@ -26,9 +27,19 @@ export interface RecoveryResult {
   reason: string;
 }
 
+export interface RecoveryEvents {
+  [eventName: string]: unknown;
+
+  "recovery.attempted": RecoveryRecord;
+  "recovery.succeeded": RecoveryRecord;
+  "recovery.failed": RecoveryRecord;
+}
+
 export class RecoveryService {
   private readonly records = new Map<string, RecoveryRecord>();
   private readonly attempts = new Map<string, number>();
+
+  readonly events = new EventBus<RecoveryEvents>();
 
   constructor(
     private readonly registry: AgentRegistry,
@@ -195,6 +206,7 @@ export class RecoveryService {
     };
 
     this.records.set(record.id, record);
+    this.events.emit("recovery.attempted", record);
 
     return record;
   }
@@ -212,6 +224,8 @@ export class RecoveryService {
       `Recovery succeeded: ${recovery.action}`,
       reason
     );
+
+    this.events.emit("recovery.succeeded", recovery);
 
     return {
       decision: "RECOVERED",
@@ -238,6 +252,8 @@ export class RecoveryService {
       `Recovery failed: ${recovery.action}`,
       reason
     );
+
+    this.events.emit("recovery.failed", recovery);
 
     return {
       decision: "FAILED",

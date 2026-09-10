@@ -2,6 +2,7 @@ import type { A2AMessage } from "../../messaging/A2A";
 import { AgentMessageService } from "../../messaging/AgentMessages";
 import { AgentRegistry } from "../../agents/AgentRegistry";
 import { EscalationService } from "../Escalation";
+import { EventBus } from "../../messaging/EventBus";
 
 export type InterventionAction =
   | "resume_worker"
@@ -29,11 +30,19 @@ export interface InterventionResult {
   reason: string;
 }
 
+export interface InterventionEvents {
+  [eventName: string]: unknown;
+
+  "intervention.created": InterventionRecord;
+}
+
 export class InterventionService {
   private readonly interventions = new Map<
     string,
     InterventionRecord
   >();
+
+  readonly events = new EventBus<InterventionEvents>();
 
   constructor(
     private readonly registry: AgentRegistry,
@@ -90,6 +99,7 @@ export class InterventionService {
     };
 
     this.interventions.set(request.id, intervention);
+    this.events.emit("intervention.created", intervention);
 
     const message = this.messages.send({
       id: `msg-intervention-${request.id}`,

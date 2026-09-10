@@ -14,6 +14,18 @@ import type {
   PaymentEvent,
   ProofToPayEvents,
 } from "../../verification/ProofToPay";
+import type {
+  RecoveryEvents,
+  RecoveryRecord,
+} from "../../orchestration/Recovery";
+import type {
+  EscalationEvents,
+  EscalationRecord,
+} from "../../orchestration/Escalation";
+import type {
+  InterventionEvents,
+  InterventionRecord,
+} from "../../orchestration/Intervention";
 
 export class AuditEventBridge {
   private readonly ledger: AuditLedger;
@@ -21,6 +33,9 @@ export class AuditEventBridge {
   private readonly verificationEventBus: EventBus<VerificationEvents>;
   private readonly qaEventBus: EventBus<QAEvents>;
   private readonly paymentEventBus: EventBus<ProofToPayEvents>;
+  private readonly recoveryEventBus: EventBus<RecoveryEvents>;
+  private readonly escalationEventBus: EventBus<EscalationEvents>;
+  private readonly interventionEventBus: EventBus<InterventionEvents>;
 
   private readonly evidenceHandler = (evidence: Evidence): void => {
     this.ledger.append({
@@ -166,12 +181,97 @@ export class AuditEventBridge {
     });
   };
 
+  private readonly handleRecoveryAttempted = (
+    recovery: RecoveryRecord
+  ): void => {
+    this.appendRecoveryEvent(
+      recovery,
+      "RECOVERY_ATTEMPTED",
+      "recovery_attempted"
+    );
+  };
+
+  private readonly handleRecoverySucceeded = (
+    recovery: RecoveryRecord
+  ): void => {
+    this.appendRecoveryEvent(
+      recovery,
+      "RECOVERY_SUCCEEDED",
+      "recovery_succeeded"
+    );
+  };
+
+  private readonly handleRecoveryFailed = (
+    recovery: RecoveryRecord
+  ): void => {
+    this.appendRecoveryEvent(
+      recovery,
+      "RECOVERY_FAILED",
+      "recovery_failed"
+    );
+  };
+
+  private readonly handleEscalationCreated = (
+    escalation: EscalationRecord
+  ): void => {
+    this.appendEscalationEvent(
+      escalation,
+      "ESCALATION_CREATED",
+      "escalation_created",
+      escalation.managerId
+    );
+  };
+
+  private readonly handleEscalationApproved = (
+    escalation: EscalationRecord
+  ): void => {
+    this.appendEscalationEvent(
+      escalation,
+      "ESCALATION_APPROVED",
+      "escalation_approved",
+      escalation.bossId
+    );
+  };
+
+  private readonly handleEscalationRejected = (
+    escalation: EscalationRecord
+  ): void => {
+    this.appendEscalationEvent(
+      escalation,
+      "ESCALATION_REJECTED",
+      "escalation_rejected",
+      escalation.bossId
+    );
+  };
+
+  private readonly handleInterventionCreated = (
+    intervention: InterventionRecord
+  ): void => {
+    this.ledger.append({
+      id: `audit-intervention-${intervention.id}`,
+      type: "INTERVENTION_CREATED",
+      actorId: intervention.bossId,
+      targetId: intervention.managerId,
+      taskId: intervention.taskId,
+      action: "intervention_created",
+      details: {
+        escalationId: intervention.escalationId,
+        action: intervention.action,
+        instruction: intervention.instruction,
+      },
+      timestamp: intervention.createdAt,
+    });
+  };
+
   constructor(
     ledger: AuditLedger,
     eventBus: EventBus<ExecutionEvents>,
     verificationEventBus?: EventBus<VerificationEvents>,
     qaEventBus?: EventBus<QAEvents>,
-    paymentEventBus?: EventBus<ProofToPayEvents>
+    paymentEventBus?: EventBus<ProofToPayEvents>,
+    recoveryEventBus?: EventBus<RecoveryEvents>,
+    escalationEventBus?: EventBus<EscalationEvents>,
+    interventionEventBus?: EventBus<InterventionEvents>
   ) {
     this.ledger = ledger;
     this.eventBus = eventBus;
@@ -181,6 +281,12 @@ export class AuditEventBridge {
       qaEventBus ?? new EventBus<QAEvents>();
     this.paymentEventBus =
       paymentEventBus ?? new EventBus<ProofToPayEvents>();
+    this.recoveryEventBus =
+      recoveryEventBus ?? new EventBus<RecoveryEvents>();
+    this.escalationEventBus =
+      escalationEventBus ?? new EventBus<EscalationEvents>();
+    this.interventionEventBus =
+      interventionEventBus ?? new EventBus<InterventionEvents>();
 
     this.eventBus.on(
       "execution.evidence_created",
@@ -215,6 +321,37 @@ export class AuditEventBridge {
     this.paymentEventBus.on(
       "payment.escalated",
       this.handlePaymentEscalated
+    );
+
+    this.recoveryEventBus.on(
+      "recovery.attempted",
+      this.handleRecoveryAttempted
+    );
+    this.recoveryEventBus.on(
+      "recovery.succeeded",
+      this.handleRecoverySucceeded
+    );
+    this.recoveryEventBus.on(
+      "recovery.failed",
+      this.handleRecoveryFailed
+    );
+
+    this.escalationEventBus.on(
+      "escalation.created",
+      this.handleEscalationCreated
+    );
+    this.escalationEventBus.on(
+      "escalation.approved",
+      this.handleEscalationApproved
+    );
+    this.escalationEventBus.on(
+      "escalation.rejected",
+      this.handleEscalationRejected
+    );
+
+    this.interventionEventBus.on(
+      "intervention.created",
+      this.handleInterventionCreated
     );
   }
 
@@ -253,5 +390,86 @@ export class AuditEventBridge {
       "payment.escalated",
       this.handlePaymentEscalated
     );
+
+    this.recoveryEventBus.off(
+      "recovery.attempted",
+      this.handleRecoveryAttempted
+    );
+    this.recoveryEventBus.off(
+      "recovery.succeeded",
+      this.handleRecoverySucceeded
+    );
+    this.recoveryEventBus.off(
+      "recovery.failed",
+      this.handleRecoveryFailed
+    );
+
+    this.escalationEventBus.off(
+      "escalation.created",
+      this.handleEscalationCreated
+    );
+    this.escalationEventBus.off(
+      "escalation.approved",
+      this.handleEscalationApproved
+    );
+    this.escalationEventBus.off(
+      "escalation.rejected",
+      this.handleEscalationRejected
+    );
+
+    this.interventionEventBus.off(
+      "intervention.created",
+      this.handleInterventionCreated
+    );
+  }
+
+  private appendRecoveryEvent(
+    recovery: RecoveryRecord,
+    type:
+      | "RECOVERY_ATTEMPTED"
+      | "RECOVERY_SUCCEEDED"
+      | "RECOVERY_FAILED",
+    action: string
+  ): void {
+    this.ledger.append({
+      id: `audit-${action}-${recovery.id}`,
+      type,
+      actorId: recovery.failedAgentId,
+      targetId: recovery.failedAgentId,
+      taskId: recovery.taskId,
+      action,
+      details: {
+        reason: recovery.reason,
+        attempt: recovery.attempt,
+        recoveryAction: recovery.action,
+        status: recovery.status,
+      },
+      timestamp: recovery.createdAt,
+    });
+  }
+
+  private appendEscalationEvent(
+    escalation: EscalationRecord,
+    type:
+      | "ESCALATION_CREATED"
+      | "ESCALATION_APPROVED"
+      | "ESCALATION_REJECTED",
+    action: string,
+    actorId: string
+  ): void {
+    this.ledger.append({
+      id: `audit-${action}-${escalation.id}`,
+      type,
+      actorId,
+      targetId: escalation.managerId,
+      taskId: escalation.taskId,
+      action,
+      details: {
+        bossId: escalation.bossId,
+        reason: escalation.reason,
+        approvalRequestId: escalation.approvalRequestId,
+      },
+      timestamp: escalation.createdAt,
+    });
   }
 }

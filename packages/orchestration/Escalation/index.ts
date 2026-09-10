@@ -2,6 +2,7 @@ import type { Agent } from "../../core/Agent";
 import type { A2AMessage } from "../../messaging/A2A";
 import { AgentMessageService } from "../../messaging/AgentMessages";
 import { AgentRegistry } from "../../agents/AgentRegistry";
+import { EventBus } from "../../messaging/EventBus";
 import {
   ApprovalEngine,
   type ApprovalStatus,
@@ -34,11 +35,21 @@ export interface EscalationState {
   approvalStatus: ApprovalStatus;
 }
 
+export interface EscalationEvents {
+  [eventName: string]: unknown;
+
+  "escalation.created": EscalationRecord;
+  "escalation.approved": EscalationRecord;
+  "escalation.rejected": EscalationRecord;
+}
+
 export class EscalationService {
   private readonly escalations = new Map<
     string,
     EscalationRecord
   >();
+
+  readonly events = new EventBus<EscalationEvents>();
 
   constructor(
     private readonly registry: AgentRegistry,
@@ -90,6 +101,7 @@ export class EscalationService {
     };
 
     this.escalations.set(request.id, escalation);
+    this.events.emit("escalation.created", escalation);
 
     const message = this.messages.send({
       id: `msg-escalation-${request.id}`,
@@ -140,6 +152,7 @@ export class EscalationService {
       escalation.approvalRequestId,
       approvedBy
     );
+    this.events.emit("escalation.approved", escalation);
 
     return {
       decision: "APPROVED",
@@ -188,6 +201,7 @@ export class EscalationService {
       escalation.approvalRequestId,
       rejectedBy
     );
+    this.events.emit("escalation.rejected", escalation);
 
     return {
       decision: "REJECTED",

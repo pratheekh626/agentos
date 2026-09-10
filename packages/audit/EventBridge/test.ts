@@ -5,19 +5,28 @@ import type { ExecutionEvents } from "../../agents/Execution";
 import type { VerificationEvents } from "../../verification/Verification";
 import type { QAEvents } from "../../verification/QA";
 import type { ProofToPayEvents } from "../../verification/ProofToPay";
+import type { RecoveryEvents } from "../../orchestration/Recovery";
+import type { EscalationEvents } from "../../orchestration/Escalation";
+import type { InterventionEvents } from "../../orchestration/Intervention";
 
 const ledger = new AuditLedger();
 const executionBus = new EventBus<ExecutionEvents>();
 const verificationBus = new EventBus<VerificationEvents>();
 const qaBus = new EventBus<QAEvents>();
 const paymentBus = new EventBus<ProofToPayEvents>();
+const recoveryBus = new EventBus<RecoveryEvents>();
+const escalationBus = new EventBus<EscalationEvents>();
+const interventionBus = new EventBus<InterventionEvents>();
 
 const bridge = new AuditEventBridge(
   ledger,
   executionBus,
   verificationBus,
   qaBus,
-  paymentBus
+  paymentBus,
+  recoveryBus,
+  escalationBus,
+  interventionBus
 );
 
 executionBus.emit("execution.evidence_created", {
@@ -157,11 +166,85 @@ paymentBus.emit("payment.escalated", {
   },
 });
 
+recoveryBus.emit("recovery.attempted", {
+  id: "recovery-1",
+  taskId: "task-1",
+  failedAgentId: "worker-1",
+  reason: "Worker failed",
+  attempt: 1,
+  action: "retry",
+  status: "pending",
+  createdAt: "2026-09-11T00:00:10.000Z",
+});
+
+recoveryBus.emit("recovery.succeeded", {
+  id: "recovery-1",
+  taskId: "task-1",
+  failedAgentId: "worker-1",
+  reason: "Worker recovered",
+  attempt: 1,
+  action: "retry",
+  status: "recovered",
+  createdAt: "2026-09-11T00:00:10.000Z",
+});
+
+recoveryBus.emit("recovery.failed", {
+  id: "recovery-2",
+  taskId: "task-2",
+  failedAgentId: "worker-1",
+  reason: "No replacement worker",
+  attempt: 2,
+  action: "reassign",
+  status: "failed",
+  createdAt: "2026-09-11T00:00:11.000Z",
+});
+
+escalationBus.emit("escalation.created", {
+  id: "escalation-1",
+  managerId: "manager-1",
+  bossId: "boss-1",
+  taskId: "task-2",
+  reason: "Recovery requires intervention",
+  createdAt: "2026-09-11T00:00:12.000Z",
+  approvalRequestId: "approval-escalation-1",
+});
+
+escalationBus.emit("escalation.approved", {
+  id: "escalation-1",
+  managerId: "manager-1",
+  bossId: "boss-1",
+  taskId: "task-2",
+  reason: "Recovery requires intervention",
+  createdAt: "2026-09-11T00:00:12.000Z",
+  approvalRequestId: "approval-escalation-1",
+});
+
+escalationBus.emit("escalation.rejected", {
+  id: "escalation-2",
+  managerId: "manager-1",
+  bossId: "boss-1",
+  taskId: "task-3",
+  reason: "Rejected intervention",
+  createdAt: "2026-09-11T00:00:13.000Z",
+  approvalRequestId: "approval-escalation-2",
+});
+
+interventionBus.emit("intervention.created", {
+  id: "intervention-1",
+  escalationId: "escalation-1",
+  bossId: "boss-1",
+  action: "send_instruction",
+  instruction: "Use the approved fallback plan.",
+  managerId: "manager-1",
+  taskId: "task-2",
+  createdAt: "2026-09-11T00:00:14.000Z",
+});
+
 const events = ledger.getAll();
 
-if (events.length !== 6) {
+if (events.length !== 13) {
   throw new Error(
-    `Expected 6 audit events, got ${events.length}`
+    `Expected 13 audit events, got ${events.length}`
   );
 }
 
@@ -173,7 +256,14 @@ if (
   eventTypes[2] !== "QA_PASSED" ||
   eventTypes[3] !== "QA_FAILED" ||
   eventTypes[4] !== "PAYMENT_RELEASED" ||
-  eventTypes[5] !== "PAYMENT_ESCALATED"
+  eventTypes[5] !== "PAYMENT_ESCALATED" ||
+  eventTypes[6] !== "RECOVERY_ATTEMPTED" ||
+  eventTypes[7] !== "RECOVERY_SUCCEEDED" ||
+  eventTypes[8] !== "RECOVERY_FAILED" ||
+  eventTypes[9] !== "ESCALATION_CREATED" ||
+  eventTypes[10] !== "ESCALATION_APPROVED" ||
+  eventTypes[11] !== "ESCALATION_REJECTED" ||
+  eventTypes[12] !== "INTERVENTION_CREATED"
 ) {
   throw new Error("Expected complete evidence-to-QA audit chain");
 }
@@ -222,6 +312,26 @@ if (events[5].details?.transactionStatus !== "pending") {
   );
 }
 
+if (events[6].details?.attempt !== 1) {
+  throw new Error("Recovery attempt was not recorded");
+}
+
+if (events[7].type !== "RECOVERY_SUCCEEDED") {
+  throw new Error("Recovery success was not audited");
+}
+
+if (events[9].actorId !== "manager-1") {
+  throw new Error("Escalation creator was not recorded");
+}
+
+if (events[10].actorId !== "boss-1") {
+  throw new Error("Escalation approver was not recorded");
+}
+
+if (events[12].details?.action !== "send_instruction") {
+  throw new Error("Intervention action was not recorded");
+}
+
 if (
   !Array.isArray(events[3].details?.issues) ||
   events[3].details.issues[0] !== "Integration check failed"
@@ -247,9 +357,9 @@ qaBus.emit("qa.passed", {
   completedAt: "2026-09-11T00:01:01.000Z",
 });
 
-if (ledger.getAll().length !== 6) {
+if (ledger.getAll().length !== 13) {
   throw new Error(
-    "Audit bridge did not disconnect payment handlers correctly"
+    "Audit bridge did not disconnect lifecycle handlers correctly"
   );
 }
 

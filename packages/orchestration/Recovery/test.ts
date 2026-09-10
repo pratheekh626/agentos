@@ -79,6 +79,25 @@ const recovery = new RecoveryService(
   2
 );
 
+let attemptedEvents = 0;
+let succeededEvents = 0;
+let failedEvents = 0;
+
+recovery.events.on("recovery.attempted", (record) => {
+  if (!recovery.get(record.id)) {
+    throw new Error("Recovery attempted event preceded persistence");
+  }
+  attemptedEvents += 1;
+});
+
+recovery.events.on("recovery.succeeded", () => {
+  succeededEvents += 1;
+});
+
+recovery.events.on("recovery.failed", () => {
+  failedEvents += 1;
+});
+
 function createAssignedTask(id: string, agentId = worker.id) {
   const task = dispatcher.createTask(
     id,
@@ -105,6 +124,10 @@ if (
   retry.task?.status !== "in_progress"
 ) {
   throw new Error("Expected worker retry recovery");
+}
+
+if (attemptedEvents !== 1 || succeededEvents !== 1) {
+  throw new Error("Expected recovery retry lifecycle events");
 }
 
 if (
@@ -139,6 +162,10 @@ if (
   exhausted.recovery?.attempt !== 3
 ) {
   throw new Error("Expected maximum retry exhaustion");
+}
+
+if (Number(attemptedEvents) !== 3 || Number(failedEvents) !== 1) {
+  throw new Error("Expected terminal recovery failure event");
 }
 
 const pausedTask = createAssignedTask("task-paused");
@@ -190,6 +217,10 @@ const missingWorker = recovery.recover(
 
 if (missingWorker.decision !== "DENY") {
   throw new Error("Expected missing worker denial");
+}
+
+if (Number(attemptedEvents) !== 5) {
+  throw new Error("Expected recovery attempts to be recorded and emitted");
 }
 
 const mismatch = recovery.recover(
