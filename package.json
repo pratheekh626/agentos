@@ -29,6 +29,7 @@
     "test:security": "tsx packages/security/SecurityGateway/test.ts",
     "test:runtime": "tsx packages/agents/Runtime/test.ts",
     "test:execution": "tsx packages/agents/Execution/test.ts",
+    "test:eventbus": "tsx packages/messaging/EventBus/test.ts",
     "test:scheduler": "tsx packages/orchestration/Scheduler/test.ts",
     "typecheck": "tsc --noEmit"
   },
