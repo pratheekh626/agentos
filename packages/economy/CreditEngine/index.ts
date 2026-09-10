@@ -22,6 +22,10 @@ import {
   type Transaction,
 } from "../Transactions";
 
+import {
+  SecurityGateway,
+} from "../../security/SecurityGateway";
+
 export interface CreditRequest {
   id: string;
 
@@ -52,7 +56,8 @@ export class CreditEngine {
     private readonly policyEngine: PolicyEngine,
     private readonly walletService: WalletService,
     private readonly budgetService: BudgetService,
-    private readonly transactionService: TransactionService
+    private readonly transactionService: TransactionService,
+    private readonly securityGateway: SecurityGateway
   ) {}
 
   requestCredits(
@@ -77,6 +82,44 @@ export class CreditEngine {
         transaction: null,
         reason:
           "Credit amount must be positive",
+      };
+    }
+
+    const security = this.securityGateway.check({
+      agent,
+      action: "spend_credits",
+      resource: `budget:${budgetId}`, 
+      amount,
+      repeatedFailures: 0,
+      unusualActivity: false,
+      sensitiveAction: false,
+      activity: {
+        agentId: agent.id,
+        recentActions: 1,
+        failedActions: 0,
+        deniedActions: 0,
+        spendingToday: amount,
+        averageDailySpending: Math.max(amount * 2, 1000),
+        delegationsToday: 0,
+        averageDailyDelegations: 1,
+        activityPerHour: 1,
+        normalActivityPerHour: 1,
+      },
+    });
+
+    if (security.decision === "DENY") {
+      return {
+        decision: "DENY",
+        transaction: null,
+        reason: security.reason,
+      };
+    }
+
+    if (security.decision === "ESCALATE") {
+      return {
+        decision: "ESCALATE",
+        transaction: null,
+        reason: security.reason,
       };
     }
 

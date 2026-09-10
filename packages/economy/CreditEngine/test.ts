@@ -26,6 +26,30 @@ import {
   CreditEngine,
 } from "./index";
 
+import {
+  IdentityService,
+} from "../../security/Identity";
+
+import {
+  AccessControlService,
+} from "../../security/AccessControl";
+
+import {
+  RiskEngine,
+} from "../../security/RiskEngine";
+
+import {
+  AnomalyDetectionService,
+} from "../../security/AnomalyDetection";
+
+import {
+  KillSwitchService,
+} from "../../security/KillSwitch";
+
+import {
+  SecurityGateway,
+} from "../../security/SecurityGateway";
+
 const registry =
   new AgentRegistry();
 
@@ -75,13 +99,53 @@ budgets.createBudget(
 const transactions =
   new TransactionService();
 
+const identityService =
+  new IdentityService();
+
+identityService.createIdentity({
+  agentId: manager.id,
+  role: manager.role,
+});
+
+identityService.createIdentity({
+  agentId: worker.id,
+  role: worker.role,
+});
+
+const accessControl =
+  new AccessControlService(
+    identityService
+  );
+
+const riskEngine =
+  new RiskEngine();
+
+const anomalyDetection =
+  new AnomalyDetectionService();
+
+const killSwitch =
+  new KillSwitchService(
+    identityService,
+    wallets
+  );
+
+const securityGateway =
+  new SecurityGateway(
+    identityService,
+    accessControl,
+    riskEngine,
+    anomalyDetection,
+    killSwitch
+  );
+
 const creditEngine =
   new CreditEngine(
     permissionEngine,
     policyEngine,
     wallets,
     budgets,
-    transactions
+    transactions,
+    securityGateway
   );
 
 const allowed =
