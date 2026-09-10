@@ -21,6 +21,7 @@
     "test:qa": "tsx packages/verification/QA/test.ts",
     "test:prooftopay": "tsx packages/verification/ProofToPay/test.ts",
     "test:audit": "tsx packages/audit/AuditLedger/test.ts",
+    "test:audit-bridge": "tsx packages/audit/EventBridge/test.ts",
     "test:identity": "tsx packages/security/Identity/test.ts",
     "test:access": "tsx packages/security/AccessControl/test.ts",
     "test:risk": "tsx packages/security/RiskEngine/test.ts",
