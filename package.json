@@ -13,6 +13,7 @@
     "test:delegation": "tsx packages/orchestration/Delegation/test.ts",
     "test:escalation": "tsx packages/orchestration/Escalation/test.ts",
     "test:intervention": "tsx packages/orchestration/Intervention/test.ts",
+    "test:recovery": "tsx packages/orchestration/Recovery/test.ts",
     "test:wallet": "tsx packages/economy/Wallet/test.ts",
     "test:treasury": "tsx packages/economy/Treasury/test.ts",
     "test:budget": "tsx packages/economy/Budget/test.ts",
