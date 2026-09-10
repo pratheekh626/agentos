@@ -16,6 +16,10 @@
     "test:budget": "tsx packages/economy/Budget/test.ts",
     "test:transactions": "tsx packages/economy/Transactions/test.ts",
     "test:credits": "tsx packages/economy/CreditEngine/test.ts",
+    "test:evidence": "tsx packages/verification/Evidence/test.ts",
+    "test:verification": "tsx packages/verification/Verification/test.ts",
+    "test:qa": "tsx packages/verification/QA/test.ts",
+    "test:prooftopay": "tsx packages/verification/ProofToPay/test.ts",
     "test:governance": "tsx packages/governance/PolicyEngine/test.ts",
     "test:delegation": "tsx packages/orchestration/Delegation/test.ts",
     "test:wallet": "tsx packages/economy/Wallet/test.ts",
@@ -23,6 +27,10 @@
     "test:budget": "tsx packages/economy/Budget/test.ts",
     "test:transactions": "tsx packages/economy/Transactions/test.ts",
     "test:credits": "tsx packages/economy/CreditEngine/test.ts",
+    "test:evidence": "tsx packages/verification/Evidence/test.ts",
+    "test:verification": "tsx packages/verification/Verification/test.ts",
+    "test:qa": "tsx packages/verification/QA/test.ts",
+    "test:prooftopay": "tsx packages/verification/ProofToPay/test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
