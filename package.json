@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc",
     "test:agents": "tsx packages/agents/AgentRegistry/test.ts",
+    "test:project-intake": "tsx packages/agents/ProjectIntake/test.ts",
     "test:requirements": "tsx packages/agents/RequirementUnderstanding/test.ts",
     "test:tasks": "tsx packages/orchestration/TaskDispatcher/test.ts",
     "test:dependencies": "tsx packages/orchestration/Dependencies/test.ts",
