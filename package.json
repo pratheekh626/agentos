@@ -25,6 +25,7 @@
     "test:access": "tsx packages/security/AccessControl/test.ts",
     "test:risk": "tsx packages/security/RiskEngine/test.ts",
     "test:anomaly": "tsx packages/security/AnomalyDetection/test.ts",
+    "test:killswitch": "tsx packages/security/KillSwitch/test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
