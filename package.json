@@ -10,6 +10,7 @@
     "test:boss-planning": "tsx packages/agents/BossPlanning/test.ts",
     "test:plan-execution": "tsx packages/orchestration/PlanExecution/test.ts",
     "test:project-execution": "tsx packages/orchestration/ProjectExecution/test.ts",
+    "test:project-worker-execution": "tsx packages/orchestration/ProjectWorkerExecution/test.ts",
     "test:requirements": "tsx packages/agents/RequirementUnderstanding/test.ts",
     "test:tasks": "tsx packages/orchestration/TaskDispatcher/test.ts",
     "test:dependencies": "tsx packages/orchestration/Dependencies/test.ts",
