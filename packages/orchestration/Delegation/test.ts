@@ -27,6 +27,35 @@ import {
   DelegationService,
 } from "./index";
 
+
+import {
+  IdentityService,
+} from "../../security/Identity";
+
+import {
+  AccessControlService,
+} from "../../security/AccessControl";
+
+import {
+  RiskEngine,
+} from "../../security/RiskEngine";
+
+import {
+  AnomalyDetectionService,
+} from "../../security/AnomalyDetection";
+
+import {
+  KillSwitchService,
+} from "../../security/KillSwitch";
+
+import {
+  SecurityGateway,
+} from "../../security/SecurityGateway";
+
+import {
+  WalletService,
+} from "../../economy/Wallet";
+
 const registry = new AgentRegistry();
 
 const boss = createBoss(
@@ -68,12 +97,60 @@ const approvalEngine =
 const taskDispatcher =
   new TaskDispatcher(registry);
 
+const identityService =
+  new IdentityService();
+
+identityService.createIdentity({
+  agentId: boss.id,
+  role: boss.role,
+});
+
+identityService.createIdentity({
+  agentId: manager.id,
+  role: manager.role,
+});
+
+identityService.createIdentity({
+  agentId: worker.id,
+  role: worker.role,
+});
+
+const walletService =
+  new WalletService();
+
+const killSwitch =
+  new KillSwitchService(
+    identityService,
+    walletService
+  );
+
+const accessControl =
+  new AccessControlService(
+    identityService
+  );
+
+const riskEngine =
+  new RiskEngine();
+
+const anomalyDetection =
+  new AnomalyDetectionService();
+
+const securityGateway =
+  new SecurityGateway(
+    identityService,
+    accessControl,
+    riskEngine,
+    anomalyDetection,
+    killSwitch
+  );
+
 const delegation =
   new DelegationService(
     registry,
     firewall,
     approvalEngine,
-    taskDispatcher
+    taskDispatcher,
+    securityGateway
   );
 
 const task =

@@ -14,6 +14,10 @@ import {
   TaskDispatcher,
 } from "../TaskDispatcher";
 
+import {
+  SecurityGateway,
+} from "../../security/SecurityGateway";
+
 export interface DelegationResult {
   decision: "ALLOW" | "DENY" | "ESCALATE";
   task: Task | null;
@@ -35,7 +39,8 @@ export class DelegationService {
     private readonly registry: AgentRegistry,
     private readonly firewall: DelegationFirewall,
     private readonly approvalEngine: ApprovalEngine,
-    private readonly taskDispatcher: TaskDispatcher
+    private readonly taskDispatcher: TaskDispatcher,
+    private readonly securityGateway: SecurityGateway
   ) {}
 
   delegate(
@@ -44,6 +49,46 @@ export class DelegationService {
     task: Task,
     riskScore: number
   ): DelegationResult {
+    const security = this.securityGateway.check({
+      agent: from,
+      action: "delegate",
+      resource: `task:${task.id}`,
+      repeatedFailures: 0,
+      unusualActivity: false,
+      sensitiveAction: false,
+    });
+
+    if (security.decision === "DENY") {
+      return {
+        decision: "DENY",
+        task: null,
+        approvalRequestId: null,
+        reason: security.reason,
+      };
+    }
+
+    if (security.decision === "ESCALATE") {
+      const approval = this.approvalEngine.createRequest(
+        `security-approval-${task.id}`,
+        from.id,
+        "delegate",
+        security.reason
+      );
+
+      this.pendingDelegations.set(approval.id, {
+        from,
+        to,
+        task,
+      });
+
+      return {
+        decision: "ESCALATE",
+        task: null,
+        approvalRequestId: approval.id,
+        reason: security.reason,
+      };
+    }
+
     const policy = this.firewall.evaluate({
       from,
       to,
