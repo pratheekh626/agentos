@@ -52,6 +52,20 @@ export interface RuntimeTaskInput {
   budget?: number;
 }
 
+export interface RuntimeSubtaskInput {
+  id: string;
+  title: string;
+  description: string;
+  priority?: TaskPriority;
+  budget?: number;
+  dependencies?: string[];
+}
+
+export interface RuntimeAssignmentResult {
+  delegation: DelegationResult;
+  message: A2AMessage | null;
+}
+
 export class AgentRuntime {
   readonly events = new EventBus<AgentRuntimeEvents>();
 
@@ -77,6 +91,87 @@ export class AgentRuntime {
     this.events.emit("task.created", task);
 
     return task;
+  }
+
+  decomposeTask(
+    task: Task,
+    manager: Agent,
+    subtasks: RuntimeSubtaskInput[]
+  ): Task[] {
+    const registeredManager = this.registry.get(manager.id);
+
+    if (
+      !registeredManager ||
+      registeredManager.role !== "manager"
+    ) {
+      throw new Error(
+        "Only registered manager agents can decompose tasks"
+      );
+    }
+
+    if (
+      task.createdBy !== manager.id &&
+      task.assignedTo !== manager.id
+    ) {
+      throw new Error(
+        "Manager does not own this task"
+      );
+    }
+
+    return subtasks.map((input) => {
+      const subtask = this.taskDispatcher.createTask(
+        input.id,
+        input.title,
+        input.description,
+        manager.id,
+        input.priority,
+        input.budget
+      );
+
+      return {
+        ...subtask,
+        dependencies: input.dependencies ?? [],
+      };
+    });
+  }
+
+  assignSubtask(
+    task: Task,
+    manager: Agent,
+    worker: Agent,
+    riskScore = 0
+  ): RuntimeAssignmentResult {
+    const delegation = this.delegationService.delegate(
+      manager,
+      worker,
+      task,
+      riskScore
+    );
+
+    if (
+      delegation.decision !== "ALLOW" ||
+      !delegation.task
+    ) {
+      return {
+        delegation,
+        message: null,
+      };
+    }
+
+    const message = this.sendMessage({
+      fromAgentId: manager.id,
+      toAgentId: worker.id,
+      type: "delegation",
+      subject: `Subtask assigned: ${task.title}`,
+      content: task.description,
+      taskId: task.id,
+      priority: task.priority,
+    });
+
+    return {
+      delegation,
+      message,
+    };
   }
 
   schedule(

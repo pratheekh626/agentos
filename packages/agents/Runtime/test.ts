@@ -175,4 +175,131 @@ if (
   throw new Error("Expected stored A2A message and event");
 }
 
+const parentTask = runtime.createTask({
+  id: "task-project-001",
+  title: "Build SaaS website",
+  description: "Deliver the complete SaaS website.",
+  createdBy: manager.id,
+  priority: "high",
+  budget: 500,
+});
+
+const subtasks = runtime.decomposeTask(
+  parentTask,
+  manager,
+  [
+    {
+      id: "task-design-001",
+      title: "Design the interface",
+      description: "Create the approved product interface.",
+      priority: "high",
+      budget: 150,
+    },
+    {
+      id: "task-frontend-001",
+      title: "Build the frontend",
+      description: "Implement the approved interface.",
+      priority: "high",
+      budget: 250,
+      dependencies: ["task-design-001"],
+    },
+  ]
+);
+
+if (
+  subtasks.length !== 2 ||
+  subtasks.some((subtask) => subtask.status !== "queued")
+) {
+  throw new Error("Expected generated subtasks to be queued");
+}
+
+if (
+  subtasks[1].dependencies[0] !== "task-design-001"
+) {
+  throw new Error("Expected subtask dependency to be preserved");
+}
+
+const assignment = runtime.assignSubtask(
+  subtasks[0],
+  manager,
+  worker
+);
+
+if (
+  assignment.delegation.decision !== "ALLOW" ||
+  assignment.delegation.task?.assignedTo !== worker.id ||
+  !assignment.message
+) {
+  throw new Error(
+    "Expected governed subtask assignment and delegation message"
+  );
+}
+
+if (
+  runtime.getMessagesForAgent(worker.id).some(
+    (item) =>
+      item.type === "delegation" &&
+      item.taskId === subtasks[0].id
+  ) !== true
+) {
+  throw new Error("Expected worker to receive subtask message");
+}
+
+const progress = runtime.sendMessage({
+  fromAgentId: worker.id,
+  toAgentId: manager.id,
+  type: "status_update",
+  subject: "Subtask progress",
+  content: "Interface design is 50% complete.",
+  taskId: subtasks[0].id,
+  priority: "medium",
+});
+
+if (
+  progress.fromAgentId !== worker.id ||
+  !runtime.getMessagesForAgent(manager.id).some(
+    (item) =>
+      item.id === progress.id &&
+      item.type === "status_update"
+  )
+) {
+  throw new Error("Expected manager to retrieve worker progress");
+}
+
+try {
+  runtime.decomposeTask(
+    parentTask,
+    worker,
+    []
+  );
+
+  throw new Error(
+    "Expected non-manager decomposition to be rejected"
+  );
+} catch (error) {
+  if (
+    !(error instanceof Error) ||
+    !error.message.includes("manager")
+  ) {
+    throw error;
+  }
+}
+
+const deniedAssignment = runtime.assignSubtask(
+  subtasks[1],
+  manager,
+  worker,
+  90
+);
+
+if (
+  deniedAssignment.delegation.decision !== "DENY" ||
+  deniedAssignment.message !== null ||
+  deniedAssignment.delegation.task !== null
+) {
+  throw new Error(
+    "Expected governance denial to prevent assignment"
+  );
+}
+
 console.log("Agent Runtime tests passed.");
