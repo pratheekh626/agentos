@@ -27,6 +27,7 @@
     "test:anomaly": "tsx packages/security/AnomalyDetection/test.ts",
     "test:killswitch": "tsx packages/security/KillSwitch/test.ts",
     "test:security": "tsx packages/security/SecurityGateway/test.ts",
+    "test:scheduler": "tsx packages/orchestration/Scheduler/test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
