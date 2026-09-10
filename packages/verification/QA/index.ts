@@ -1,3 +1,5 @@
+import { EventBus } from "../../messaging/EventBus";
+
 export type QAStatus =
   | "pending"
   | "passed"
@@ -21,8 +23,17 @@ export interface QACheck {
   completedAt: string | null;
 }
 
+export interface QAEvents {
+  [eventName: string]: unknown;
+
+  "qa.passed": QACheck;
+  "qa.failed": QACheck;
+}
+
 export class QAService {
   private checks = new Map<string, QACheck>();
+
+  readonly events = new EventBus<QAEvents>();
 
   create(
     id: string,
@@ -161,6 +172,12 @@ export class QAService {
     };
 
     this.checks.set(id, updated);
+
+    if (status === "passed") {
+      this.events.emit("qa.passed", updated);
+    } else {
+      this.events.emit("qa.failed", updated);
+    }
 
     return updated;
   }

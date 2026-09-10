@@ -6,11 +6,16 @@ import type {
   VerificationEvents,
   VerificationCheck,
 } from "../../verification/Verification";
+import type {
+  QAEvents,
+  QACheck,
+} from "../../verification/QA";
 
 export class AuditEventBridge {
   private readonly ledger: AuditLedger;
   private readonly eventBus: EventBus<ExecutionEvents>;
   private readonly verificationEventBus: EventBus<VerificationEvents>;
+  private readonly qaEventBus: EventBus<QAEvents>;
 
   private readonly evidenceHandler = (evidence: Evidence): void => {
     this.ledger.append({
@@ -68,15 +73,55 @@ export class AuditEventBridge {
     });
   };
 
+  private readonly handleQAPassed = (
+    check: QACheck
+  ): void => {
+    this.ledger.append({
+      id: `audit-qa-passed-${check.id}`,
+      type: "QA_PASSED",
+      actorId: check.checkedBy ?? "unknown",
+      action: "qa_passed",
+      targetId: check.id,
+      taskId: check.taskId,
+      details: {
+        score: check.score,
+        checks: check.checks,
+      },
+      timestamp: check.completedAt ?? check.createdAt,
+    });
+  };
+
+  private readonly handleQAFailed = (
+    check: QACheck
+  ): void => {
+    this.ledger.append({
+      id: `audit-qa-failed-${check.id}`,
+      type: "QA_FAILED",
+      actorId: check.checkedBy ?? "unknown",
+      action: "qa_failed",
+      targetId: check.id,
+      taskId: check.taskId,
+      details: {
+        score: check.score,
+        checks: check.checks,
+        issues: check.issues,
+      },
+      timestamp: check.completedAt ?? check.createdAt,
+    });
+  };
+
   constructor(
     ledger: AuditLedger,
     eventBus: EventBus<ExecutionEvents>,
-    verificationEventBus?: EventBus<VerificationEvents>
+    verificationEventBus?: EventBus<VerificationEvents>,
+    qaEventBus?: EventBus<QAEvents>
   ) {
     this.ledger = ledger;
     this.eventBus = eventBus;
     this.verificationEventBus =
       verificationEventBus ?? new EventBus<VerificationEvents>();
+    this.qaEventBus =
+      qaEventBus ?? new EventBus<QAEvents>();
 
     this.eventBus.on(
       "execution.evidence_created",
@@ -91,6 +136,16 @@ export class AuditEventBridge {
     this.verificationEventBus.on(
       "verification.failed",
       this.verificationFailedHandler
+    );
+
+    this.qaEventBus.on(
+      "qa.passed",
+      this.handleQAPassed
+    );
+
+    this.qaEventBus.on(
+      "qa.failed",
+      this.handleQAFailed
     );
   }
 
@@ -108,6 +163,16 @@ export class AuditEventBridge {
     this.verificationEventBus.off(
       "verification.failed",
       this.verificationFailedHandler
+    );
+
+    this.qaEventBus.off(
+      "qa.passed",
+      this.handleQAPassed
+    );
+
+    this.qaEventBus.off(
+      "qa.failed",
+      this.handleQAFailed
     );
   }
 }

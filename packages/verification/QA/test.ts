@@ -86,3 +86,56 @@ try {
 }
 
 console.log("\nQA tests passed.");
+
+const eventQA = new QAService();
+const passedEvents: import("./index").QACheck[] = [];
+const failedEvents: import("./index").QACheck[] = [];
+
+eventQA.events.on("qa.passed", (check) => {
+  passedEvents.push(check);
+});
+
+eventQA.events.on("qa.failed", (check) => {
+  failedEvents.push(check);
+});
+
+const eventPassed = eventQA.create(
+  "qa-pass",
+  "task-qa-pass",
+  ["Build validation"]
+);
+
+eventQA.pass(
+  eventPassed.id,
+  95,
+  "qa-agent-events"
+);
+
+if (
+  passedEvents.length !== 1 ||
+  passedEvents[0].id !== "qa-pass"
+) {
+  throw new Error("Expected qa.passed event");
+}
+
+const eventFailed = eventQA.create(
+  "qa-fail",
+  "task-qa-fail",
+  ["Security validation"]
+);
+
+eventQA.fail(
+  eventFailed.id,
+  20,
+  ["Security check failed"],
+  "qa-agent-events"
+);
+
+if (
+  failedEvents.length !== 1 ||
+  failedEvents[0].id !== "qa-fail"
+) {
+  throw new Error("Expected qa.failed event");
+}
+
+console.log("QA event tests passed.");
