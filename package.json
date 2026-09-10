@@ -1,0 +1,22 @@
+{
+  "name": "agentos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AGENTOS - Governed Autonomous AI Organization",
+  "scripts": {
+    "build": "tsc",
+    "test:agents": "tsx packages/agents/AgentRegistry/test.ts",
+    "test:tasks": "tsx packages/orchestration/TaskDispatcher/test.ts",
+    "test:dependencies": "tsx packages/orchestration/Dependencies/test.ts",
+    "test:a2a": "tsx packages/messaging/A2A/test.ts",
+    "test:governance": "tsx packages/governance/PolicyEngine/test.ts",
+    "test:delegation": "tsx packages/orchestration/Delegation/test.ts",
+    "test:governance": "tsx packages/governance/PolicyEngine/test.ts",
+    "test:delegation": "tsx packages/orchestration/Delegation/test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.4.2"
+  }
+}
