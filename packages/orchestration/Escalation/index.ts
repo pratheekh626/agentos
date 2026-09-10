@@ -4,6 +4,7 @@ import { AgentMessageService } from "../../messaging/AgentMessages";
 import { AgentRegistry } from "../../agents/AgentRegistry";
 import {
   ApprovalEngine,
+  type ApprovalStatus,
   type ApprovalRequest,
 } from "../../governance/ApprovalEngine";
 
@@ -26,6 +27,11 @@ export interface EscalationResult {
   approval: ApprovalRequest | null;
   message: A2AMessage | null;
   reason: string;
+}
+
+export interface EscalationState {
+  escalation: EscalationRecord;
+  approvalStatus: ApprovalStatus;
 }
 
 export class EscalationService {
@@ -204,6 +210,27 @@ export class EscalationService {
 
   get(escalationId: string): EscalationRecord | undefined {
     return this.escalations.get(escalationId);
+  }
+
+  getState(escalationId: string): EscalationState | undefined {
+    const escalation = this.escalations.get(escalationId);
+
+    if (!escalation) {
+      return undefined;
+    }
+
+    const approval = this.approvalEngine.get(
+      escalation.approvalRequestId
+    );
+
+    if (!approval) {
+      return undefined;
+    }
+
+    return {
+      escalation,
+      approvalStatus: approval.status,
+    };
   }
 
   private deny(reason: string): EscalationResult {
