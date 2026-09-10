@@ -11,6 +11,7 @@
     "test:a2a": "tsx packages/messaging/A2A/test.ts",
     "test:governance": "tsx packages/governance/PolicyEngine/test.ts",
     "test:delegation": "tsx packages/orchestration/Delegation/test.ts",
+    "test:escalation": "tsx packages/orchestration/Escalation/test.ts",
     "test:wallet": "tsx packages/economy/Wallet/test.ts",
     "test:treasury": "tsx packages/economy/Treasury/test.ts",
     "test:budget": "tsx packages/economy/Budget/test.ts",
