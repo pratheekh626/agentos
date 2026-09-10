@@ -266,6 +266,78 @@ if (
   throw new Error("Expected manager to retrieve worker progress");
 }
 
+if (
+  runtime.getWorkerStatus(manager.id, worker.id) !==
+  "working"
+) {
+  throw new Error("Expected manager to read worker status");
+}
+
+const monitoredTasks = new Map([
+  [subtasks[0].id, assignment.delegation.task!],
+]);
+
+if (
+  runtime.getWorkerTasks(
+    manager.id,
+    worker.id,
+    monitoredTasks
+  ).length !== 1
+) {
+  throw new Error("Expected manager to read worker task state");
+}
+
+const blocker = runtime.sendMessage({
+  fromAgentId: worker.id,
+  toAgentId: manager.id,
+  type: "notification",
+  subject: "Subtask blocker",
+  content: "Waiting for API credentials.",
+  taskId: subtasks[0].id,
+  priority: "high",
+});
+
+if (
+  runtime.getWorkerProgressUpdates(
+    manager.id,
+    worker.id
+  ).length !== 1
+) {
+  throw new Error("Expected manager to read worker progress");
+}
+
+if (
+  runtime.getWorkerBlockerUpdates(
+    manager.id,
+    worker.id
+  )[0]?.id !== blocker.id
+) {
+  throw new Error("Expected manager to read worker blocker");
+}
+
+const unrelatedWorker = createWorker(
+  "worker-002",
+  "Backend Developer",
+  "manager-002"
+);
+
+registry.register(unrelatedWorker);
+
+try {
+  runtime.getWorkerStatus(manager.id, unrelatedWorker.id);
+
+  throw new Error(
+    "Expected unrelated worker access to be rejected"
+  );
+} catch (error) {
+  if (
+    !(error instanceof Error) ||
+    !error.message.includes("not managed")
+  ) {
+    throw error;
+  }
+}
+
 try {
   runtime.decomposeTask(
     parentTask,

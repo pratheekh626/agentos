@@ -306,6 +306,57 @@ export class AgentRuntime {
     return this.messages.getByAgent(agentId);
   }
 
+  getWorkerStatus(
+    managerId: string,
+    workerId: string
+  ): Agent["status"] {
+    this.assertManagedWorker(managerId, workerId);
+
+    return this.registry.get(workerId)!.status;
+  }
+
+  getWorkerTasks(
+    managerId: string,
+    workerId: string,
+    tasks: Map<string, Task>
+  ): Task[] {
+    this.assertManagedWorker(managerId, workerId);
+
+    return Array.from(tasks.values()).filter(
+      (task) => task.assignedTo === workerId
+    );
+  }
+
+  getWorkerProgressUpdates(
+    managerId: string,
+    workerId: string
+  ): A2AMessage[] {
+    this.assertManagedWorker(managerId, workerId);
+
+    return this.messages
+      .getConversation(managerId, workerId)
+      .filter(
+        (message) =>
+          message.fromAgentId === workerId &&
+          message.type === "status_update"
+      );
+  }
+
+  getWorkerBlockerUpdates(
+    managerId: string,
+    workerId: string
+  ): A2AMessage[] {
+    this.assertManagedWorker(managerId, workerId);
+
+    return this.messages
+      .getConversation(managerId, workerId)
+      .filter(
+        (message) =>
+          message.fromAgentId === workerId &&
+          message.type === "notification"
+      );
+  }
+
   private emitStatusChanged(
     agentId: string,
     previousStatus: Agent["status"],
@@ -316,5 +367,29 @@ export class AgentRuntime {
       previousStatus,
       status,
     });
+  }
+
+  private assertManagedWorker(
+    managerId: string,
+    workerId: string
+  ): void {
+    const manager = this.registry.get(managerId);
+    const worker = this.registry.get(workerId);
+
+    if (!manager || manager.role !== "manager") {
+      throw new Error(
+        "Only registered managers can monitor workers"
+      );
+    }
+
+    if (
+      !worker ||
+      worker.role !== "worker" ||
+      worker.managerId !== managerId
+    ) {
+      throw new Error(
+        "Worker is not managed by this manager"
+      );
+    }
   }
 }
