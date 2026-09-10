@@ -159,6 +159,23 @@ const proofToPay =
     creditEngine
   );
 
+let releasedEvents = 0;
+let escalatedEvents = 0;
+
+proofToPay.events.on(
+  "payment.released",
+  () => {
+    releasedEvents += 1;
+  }
+);
+
+proofToPay.events.on(
+  "payment.escalated",
+  () => {
+    escalatedEvents += 1;
+  }
+);
+
 walletService.createWallet(
   worker.id,
   1250,
@@ -240,6 +257,12 @@ if (
   );
 }
 
+if (releasedEvents !== 1 || escalatedEvents !== 0) {
+  throw new Error(
+    "Expected one payment.released event"
+  );
+}
+
 const rejected =
   proofToPay.pay({
     id: "payment-002",
@@ -283,6 +306,35 @@ if (
 ) {
   throw new Error(
     "Expected high-risk payment to require approval"
+  );
+}
+
+if (releasedEvents !== 1 || Number(escalatedEvents) !== 1) {
+  throw new Error(
+    "Expected one payment.escalated event"
+  );
+}
+
+const denied =
+  proofToPay.pay({
+    id: "payment-004",
+    agent: worker,
+    taskId: "task-production",
+    amount: 100,
+    reason: "Blocked operation",
+    riskScore: 90,
+    budgetId: "budget-worker-001",
+  });
+
+if (denied.status !== "rejected") {
+  throw new Error(
+    "Expected denied payment to be rejected"
+  );
+}
+
+if (releasedEvents !== 1 || Number(escalatedEvents) !== 1) {
+  throw new Error(
+    "Denied payment must not emit a payment event"
   );
 }
 

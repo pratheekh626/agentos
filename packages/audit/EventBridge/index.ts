@@ -10,12 +10,17 @@ import type {
   QAEvents,
   QACheck,
 } from "../../verification/QA";
+import type {
+  PaymentEvent,
+  ProofToPayEvents,
+} from "../../verification/ProofToPay";
 
 export class AuditEventBridge {
   private readonly ledger: AuditLedger;
   private readonly eventBus: EventBus<ExecutionEvents>;
   private readonly verificationEventBus: EventBus<VerificationEvents>;
   private readonly qaEventBus: EventBus<QAEvents>;
+  private readonly paymentEventBus: EventBus<ProofToPayEvents>;
 
   private readonly evidenceHandler = (evidence: Evidence): void => {
     this.ledger.append({
@@ -110,11 +115,63 @@ export class AuditEventBridge {
     });
   };
 
+  private readonly handlePaymentReleased = (
+    event: PaymentEvent
+  ): void => {
+    const transaction = event.result.creditResult?.transaction;
+
+    this.ledger.append({
+      id: `audit-payment-released-${event.request.id}`,
+      type: "PAYMENT_RELEASED",
+      actorId: event.request.agent.id,
+      action: "payment_released",
+      targetId: transaction?.id ?? event.request.id,
+      taskId: event.request.taskId,
+      details: {
+        amount: event.request.amount,
+        reason: event.request.reason,
+        transactionId: transaction?.id ?? null,
+        transactionStatus: transaction?.status ?? null,
+        creditReason: event.result.reason,
+      },
+      timestamp:
+        transaction?.completedAt ??
+        transaction?.createdAt ??
+        new Date().toISOString(),
+    });
+  };
+
+  private readonly handlePaymentEscalated = (
+    event: PaymentEvent
+  ): void => {
+    const transaction = event.result.creditResult?.transaction;
+
+    this.ledger.append({
+      id: `audit-payment-escalated-${event.request.id}`,
+      type: "PAYMENT_ESCALATED",
+      actorId: event.request.agent.id,
+      action: "payment_escalated",
+      targetId: transaction?.id ?? event.request.id,
+      taskId: event.request.taskId,
+      details: {
+        amount: event.request.amount,
+        reason: event.request.reason,
+        transactionId: transaction?.id ?? null,
+        transactionStatus: transaction?.status ?? null,
+        creditReason: event.result.reason,
+      },
+      timestamp:
+        transaction?.createdAt ??
+        new Date().toISOString(),
+    });
+  };
+
   constructor(
     ledger: AuditLedger,
     eventBus: EventBus<ExecutionEvents>,
     verificationEventBus?: EventBus<VerificationEvents>,
-    qaEventBus?: EventBus<QAEvents>
+    qaEventBus?: EventBus<QAEvents>,
+    paymentEventBus?: EventBus<ProofToPayEvents>
   ) {
     this.ledger = ledger;
     this.eventBus = eventBus;
@@ -122,6 +179,8 @@ export class AuditEventBridge {
       verificationEventBus ?? new EventBus<VerificationEvents>();
     this.qaEventBus =
       qaEventBus ?? new EventBus<QAEvents>();
+    this.paymentEventBus =
+      paymentEventBus ?? new EventBus<ProofToPayEvents>();
 
     this.eventBus.on(
       "execution.evidence_created",
@@ -146,6 +205,16 @@ export class AuditEventBridge {
     this.qaEventBus.on(
       "qa.failed",
       this.handleQAFailed
+    );
+
+    this.paymentEventBus.on(
+      "payment.released",
+      this.handlePaymentReleased
+    );
+
+    this.paymentEventBus.on(
+      "payment.escalated",
+      this.handlePaymentEscalated
     );
   }
 
@@ -173,6 +242,16 @@ export class AuditEventBridge {
     this.qaEventBus.off(
       "qa.failed",
       this.handleQAFailed
+    );
+
+    this.paymentEventBus.off(
+      "payment.released",
+      this.handlePaymentReleased
+    );
+
+    this.paymentEventBus.off(
+      "payment.escalated",
+      this.handlePaymentEscalated
     );
   }
 }

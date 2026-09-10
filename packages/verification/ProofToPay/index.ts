@@ -3,6 +3,7 @@ import type { VerificationService } from "../Verification";
 import type { QAService } from "../QA";
 import type { CreditEngine, CreditResult } from "../../economy/CreditEngine";
 import type { Agent } from "../../core/Agent";
+import { EventBus } from "../../messaging/EventBus";
 
 export type ProofToPayStatus =
   | "pending"
@@ -26,7 +27,21 @@ export interface ProofToPayResult {
   reason: string;
 }
 
+export interface PaymentEvent {
+  request: ProofToPayRequest;
+  result: ProofToPayResult;
+}
+
+export interface ProofToPayEvents {
+  [eventName: string]: unknown;
+
+  "payment.released": PaymentEvent;
+  "payment.escalated": PaymentEvent;
+}
+
 export class ProofToPayService {
+  readonly events = new EventBus<ProofToPayEvents>();
+
   constructor(
     private readonly evidenceService: EvidenceService,
     private readonly verificationService: VerificationService,
@@ -100,23 +115,37 @@ export class ProofToPayService {
       });
 
     if (creditResult.decision === "ALLOW") {
-      return {
+      const result: ProofToPayResult = {
         status: "paid",
         creditResult,
         reason:
           "Proof verified and payment released",
       };
+
+      this.events.emit("payment.released", {
+        request,
+        result,
+      });
+
+      return result;
     }
 
     if (
       creditResult.decision === "ESCALATE"
     ) {
-      return {
+      const result: ProofToPayResult = {
         status: "awaiting_approval",
         creditResult,
         reason:
           "Proof verified but payment requires approval",
       };
+
+      this.events.emit("payment.escalated", {
+        request,
+        result,
+      });
+
+      return result;
     }
 
     return {

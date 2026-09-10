@@ -4,17 +4,20 @@ import { EventBus } from "../../messaging/EventBus";
 import type { ExecutionEvents } from "../../agents/Execution";
 import type { VerificationEvents } from "../../verification/Verification";
 import type { QAEvents } from "../../verification/QA";
+import type { ProofToPayEvents } from "../../verification/ProofToPay";
 
 const ledger = new AuditLedger();
 const executionBus = new EventBus<ExecutionEvents>();
 const verificationBus = new EventBus<VerificationEvents>();
 const qaBus = new EventBus<QAEvents>();
+const paymentBus = new EventBus<ProofToPayEvents>();
 
 const bridge = new AuditEventBridge(
   ledger,
   executionBus,
   verificationBus,
-  qaBus
+  qaBus,
+  paymentBus
 );
 
 executionBus.emit("execution.evidence_created", {
@@ -64,11 +67,101 @@ qaBus.emit("qa.failed", {
   completedAt: "2026-09-11T00:00:06.000Z",
 });
 
+paymentBus.emit("payment.released", {
+  request: {
+    id: "payment-1",
+    agent: {
+      id: "worker-1",
+      name: "Worker",
+      role: "worker",
+      managerId: "manager-1",
+      status: "working",
+      permissions: {
+        canDelegate: false,
+        canExecuteTools: true,
+        canSpendCredits: true,
+        canApproveWork: false,
+      },
+      trustScore: 90,
+      createdAt: "2026-09-11T00:00:00.000Z",
+    },
+    taskId: "task-1",
+    amount: 300,
+    reason: "Approved work",
+    riskScore: 10,
+    budgetId: "budget-1",
+  },
+  result: {
+    status: "paid",
+    creditResult: {
+      decision: "ALLOW",
+      transaction: {
+        id: "transaction-1",
+        agentId: "worker-1",
+        type: "debit",
+        amount: 300,
+        status: "completed",
+        reason: "Approved work",
+        taskId: "task-1",
+        createdAt: "2026-09-11T00:00:07.000Z",
+        completedAt: "2026-09-11T00:00:08.000Z",
+      },
+      reason: "Action satisfies current policy",
+    },
+    reason: "Proof verified and payment released",
+  },
+});
+
+paymentBus.emit("payment.escalated", {
+  request: {
+    id: "payment-2",
+    agent: {
+      id: "worker-1",
+      name: "Worker",
+      role: "worker",
+      managerId: "manager-1",
+      status: "working",
+      permissions: {
+        canDelegate: false,
+        canExecuteTools: true,
+        canSpendCredits: true,
+        canApproveWork: false,
+      },
+      trustScore: 90,
+      createdAt: "2026-09-11T00:00:00.000Z",
+    },
+    taskId: "task-1",
+    amount: 200,
+    reason: "Higher-risk work",
+    riskScore: 60,
+    budgetId: "budget-1",
+  },
+  result: {
+    status: "awaiting_approval",
+    creditResult: {
+      decision: "ESCALATE",
+      transaction: {
+        id: "transaction-2",
+        agentId: "worker-1",
+        type: "debit",
+        amount: 200,
+        status: "pending",
+        reason: "Higher-risk work",
+        taskId: "task-1",
+        createdAt: "2026-09-11T00:00:09.000Z",
+        completedAt: null,
+      },
+      reason: "Action requires human approval",
+    },
+    reason: "Proof verified but payment requires approval",
+  },
+});
+
 const events = ledger.getAll();
 
-if (events.length !== 4) {
+if (events.length !== 6) {
   throw new Error(
-    `Expected 4 audit events, got ${events.length}`
+    `Expected 6 audit events, got ${events.length}`
   );
 }
 
@@ -78,7 +171,9 @@ if (
   eventTypes[0] !== "EVIDENCE_SUBMITTED" ||
   eventTypes[1] !== "VERIFICATION_PASSED" ||
   eventTypes[2] !== "QA_PASSED" ||
-  eventTypes[3] !== "QA_FAILED"
+  eventTypes[3] !== "QA_FAILED" ||
+  eventTypes[4] !== "PAYMENT_RELEASED" ||
+  eventTypes[5] !== "PAYMENT_ESCALATED"
 ) {
   throw new Error("Expected complete evidence-to-QA audit chain");
 }
@@ -101,6 +196,30 @@ if (events[2].details?.score !== 98) {
 
 if (events[3].details?.score !== 20) {
   throw new Error("QA failed score was not recorded");
+}
+
+if (events[4].actorId !== "worker-1") {
+  throw new Error("Incorrect payment released actor");
+}
+
+if (events[4].targetId !== "transaction-1") {
+  throw new Error("Incorrect payment released target");
+}
+
+if (events[4].taskId !== "task-1") {
+  throw new Error("Incorrect payment released task");
+}
+
+if (events[4].details?.transactionStatus !== "completed") {
+  throw new Error(
+    "Payment released transaction was not completed"
+  );
+}
+
+if (events[5].details?.transactionStatus !== "pending") {
+  throw new Error(
+    "Payment escalated transaction was not pending"
+  );
 }
 
 if (
@@ -128,9 +247,9 @@ qaBus.emit("qa.passed", {
   completedAt: "2026-09-11T00:01:01.000Z",
 });
 
-if (ledger.getAll().length !== 4) {
+if (ledger.getAll().length !== 6) {
   throw new Error(
-    "Audit bridge did not disconnect QA handlers correctly"
+    "Audit bridge did not disconnect payment handlers correctly"
   );
 }
 
