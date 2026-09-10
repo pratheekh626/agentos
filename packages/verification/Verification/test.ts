@@ -133,3 +133,91 @@ try {
 console.log(
   "\nVerification tests passed."
 );
+
+const eventVerification =
+  new VerificationService();
+
+let passedEventId: string | null = null;
+let failedEventId: string | null = null;
+
+eventVerification.events.on(
+  "verification.passed",
+  (check) => {
+    passedEventId = check.id;
+  }
+);
+
+eventVerification.events.on(
+  "verification.failed",
+  (check) => {
+    failedEventId = check.id;
+  }
+);
+
+const passedCheck =
+  eventVerification.create(
+    "verification-event-pass",
+    "task-event-pass",
+    [
+      {
+        id: "evidence-event-pass",
+        taskId: "task-event-pass",
+        agentId: "worker-event",
+        type: "test_result",
+        title: "Passing evidence",
+        description: "Verification event test",
+        reference: "test://pass",
+        createdAt:
+          "2026-09-11T00:00:00.000Z",
+      },
+    ]
+  );
+
+eventVerification.pass(
+  passedCheck.id,
+  95,
+  "Verification passed",
+  "tester-event"
+);
+
+if (passedEventId !== passedCheck.id) {
+  throw new Error(
+    "Expected verification.passed event"
+  );
+}
+
+const failedCheck =
+  eventVerification.create(
+    "verification-event-fail",
+    "task-event-fail",
+    [
+      {
+        id: "evidence-event-fail",
+        taskId: "task-event-fail",
+        agentId: "worker-event",
+        type: "test_result",
+        title: "Failing evidence",
+        description: "Verification event test",
+        reference: "test://fail",
+        createdAt:
+          "2026-09-11T00:01:00.000Z",
+      },
+    ]
+  );
+
+eventVerification.fail(
+  failedCheck.id,
+  25,
+  "Verification failed",
+  "tester-event"
+);
+
+if (failedEventId !== failedCheck.id) {
+  throw new Error(
+    "Expected verification.failed event"
+  );
+}
+
+console.log(
+  "Verification event tests passed"
+);

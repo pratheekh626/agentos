@@ -18,6 +18,7 @@
     "test:credits": "tsx packages/economy/CreditEngine/test.ts",
     "test:evidence": "tsx packages/verification/Evidence/test.ts",
     "test:verification": "tsx packages/verification/Verification/test.ts",
+    "test:verification-audit": "tsx packages/verification/Verification/test.ts",
     "test:qa": "tsx packages/verification/QA/test.ts",
     "test:prooftopay": "tsx packages/verification/ProofToPay/test.ts",
     "test:audit": "tsx packages/audit/AuditLedger/test.ts",

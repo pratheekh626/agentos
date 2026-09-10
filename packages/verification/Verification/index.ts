@@ -1,9 +1,17 @@
 import type { Evidence } from "../Evidence";
+import { EventBus } from "../../messaging/EventBus";
 
 export type VerificationStatus =
   | "pending"
   | "passed"
   | "failed";
+
+export interface VerificationEvents {
+  [eventName: string]: unknown;
+
+  "verification.passed": VerificationCheck;
+  "verification.failed": VerificationCheck;
+}
 
 export interface VerificationCheck {
   id: string;
@@ -25,6 +33,8 @@ export interface VerificationCheck {
 
 export class VerificationService {
   private checks = new Map<string, VerificationCheck>();
+
+  readonly events = new EventBus<VerificationEvents>();
 
   create(
     id: string,
@@ -184,6 +194,18 @@ export class VerificationService {
       verificationId,
       updated
     );
+
+    if (status === "passed") {
+      this.events.emit(
+        "verification.passed",
+        updated
+      );
+    } else {
+      this.events.emit(
+        "verification.failed",
+        updated
+      );
+    }
 
     return updated;
   }
