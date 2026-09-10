@@ -22,6 +22,7 @@
     "test:prooftopay": "tsx packages/verification/ProofToPay/test.ts",
     "test:audit": "tsx packages/audit/AuditLedger/test.ts",
     "test:identity": "tsx packages/security/Identity/test.ts",
+    "test:access": "tsx packages/security/AccessControl/test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
