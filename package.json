@@ -24,6 +24,7 @@
     "test:identity": "tsx packages/security/Identity/test.ts",
     "test:access": "tsx packages/security/AccessControl/test.ts",
     "test:risk": "tsx packages/security/RiskEngine/test.ts",
+    "test:anomaly": "tsx packages/security/AnomalyDetection/test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
