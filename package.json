@@ -21,21 +21,11 @@
     "test:qa": "tsx packages/verification/QA/test.ts",
     "test:prooftopay": "tsx packages/verification/ProofToPay/test.ts",
     "test:audit": "tsx packages/audit/AuditLedger/test.ts",
-    "test:governance": "tsx packages/governance/PolicyEngine/test.ts",
-    "test:delegation": "tsx packages/orchestration/Delegation/test.ts",
-    "test:wallet": "tsx packages/economy/Wallet/test.ts",
-    "test:treasury": "tsx packages/economy/Treasury/test.ts",
-    "test:budget": "tsx packages/economy/Budget/test.ts",
-    "test:transactions": "tsx packages/economy/Transactions/test.ts",
-    "test:credits": "tsx packages/economy/CreditEngine/test.ts",
-    "test:evidence": "tsx packages/verification/Evidence/test.ts",
-    "test:verification": "tsx packages/verification/Verification/test.ts",
-    "test:qa": "tsx packages/verification/QA/test.ts",
-    "test:prooftopay": "tsx packages/verification/ProofToPay/test.ts",
-    "test:audit": "tsx packages/audit/AuditLedger/test.ts",
+    "test:identity": "tsx packages/security/Identity/test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/node": "^22.20.2",
     "tsx": "^4.19.2",
     "typescript": "^5.4.2"
   }
