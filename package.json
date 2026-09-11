@@ -20,6 +20,8 @@
     "test:organization-conference": "tsx scripts/test-organization-conference.ts",
     "test:manager-allocation": "tsx packages/orchestration/ManagerAllocation/test.ts",
     "test:manager-allocation-e2e": "tsx scripts/test-manager-allocation.ts",
+    "test:manager-task-lifecycle": "tsx packages/orchestration/ManagerTaskLifecycle/test.ts",
+    "test:manager-task-lifecycle-e2e": "tsx scripts/test-manager-task-lifecycle.ts",
     "test:requirements": "tsx packages/agents/RequirementUnderstanding/test.ts",
     "test:tasks": "tsx packages/orchestration/TaskDispatcher/test.ts",
     "test:dependencies": "tsx packages/orchestration/Dependencies/test.ts",

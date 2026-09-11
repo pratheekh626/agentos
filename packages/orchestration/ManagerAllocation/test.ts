@@ -54,4 +54,52 @@ if (allocation.getAuthorizedTasks("allocation", manager.id, tasks).length !== 0)
 if (allocation.activateAllocation("allocation", tasks).decision !== "ACTIVATED") throw new Error("Expected allocation activation");
 if (allocation.getAuthorizedTasks("allocation", manager.id, tasks).length !== 2) throw new Error("Active allocation should expose only authorized tasks");
 if (allocation.getAuthorizedTasks("allocation", "other-manager", tasks).length !== 0) throw new Error("Allocation exposed tasks to another manager");
+
+// ── decomposeTaskIds tests ────────────────────────────────────────────────────
+
+// Build a second meeting/decision for the decompose fixture
+const decompMeeting = conference.createMeeting({ id: "meeting-decomp", projectId: "project-decomp", calledBy: boss.id, participants: [manager.id], agenda: "Decompose" });
+conference.startMeeting(decompMeeting.id);
+const decompDecision = conference.createDecision({ id: "decision-decomp", meetingId: decompMeeting.id, decidedBy: boss.id, decisionType: "ASSIGN_MANAGER", summary: "Decompose work", taskIds: ["task-exec", "task-decomp"], managerId: manager.id });
+conference.completeMeeting(decompMeeting.id);
+
+const decompTasks = new Map([
+  ["task-exec",  { id: "task-exec",  title: "Exec",  description: "", assignedTo: null, createdBy: boss.id,    status: "queued" as const, priority: "high"   as const, dependencies: [], budget: 0, spent: 0, createdAt: "now", updatedAt: "now" }],
+  ["task-decomp",{ id: "task-decomp",title: "Decomp",description: "", assignedTo: null, createdBy: manager.id, status: "queued" as const, priority: "medium" as const, dependencies: [], budget: 0, spent: 0, createdAt: "now", updatedAt: "now" }],
+]);
+
+// Validation: decomposeTaskIds must be a subset of taskIds
+const badSubset = allocation.createAllocation(
+  { id: "alloc-bad-subset", organizationId: "org", meetingId: decompMeeting.id, decisionId: decompDecision.id, projectId: "project-decomp", managerId: manager.id, taskIds: ["task-exec", "task-decomp"], decomposeTaskIds: ["task-nonexistent"], assignedBy: boss.id },
+  decompTasks
+);
+if (badSubset.decision !== "REJECTED" || !badSubset.reason.includes("subset")) throw new Error("Expected rejection when decomposeTaskIds is not a subset of taskIds");
+
+// Happy path: create allocation with decomposeTaskIds
+const decompAlloc = allocation.createAllocation(
+  { id: "alloc-decomp", organizationId: "org", meetingId: decompMeeting.id, decisionId: decompDecision.id, projectId: "project-decomp", managerId: manager.id, taskIds: ["task-exec", "task-decomp"], decomposeTaskIds: ["task-decomp"], assignedBy: boss.id },
+  decompTasks
+);
+if (decompAlloc.decision !== "CREATED") throw new Error("Expected decompose allocation creation");
+if (allocation.approveAllocation("alloc-decomp", boss.id).decision !== "APPROVED") throw new Error("Expected approval");
+
+const decompActivated = allocation.activateAllocation("alloc-decomp", decompTasks);
+if (decompActivated.decision !== "ACTIVATED") throw new Error("Expected activation with decomposeTaskIds");
+
+// task-exec should have been scheduled (it is a worker-executable task)
+if (decompActivated.scheduledTasks.length !== 1 || decompActivated.scheduledTasks[0].id !== "task-exec") {
+  throw new Error("Expected only task-exec to be scheduled during activation");
+}
+
+// task-decomp must NOT be scheduled — it stays unassigned, ready for manager decomposition
+const decompTaskState = decompTasks.get("task-decomp")!;
+if (decompTaskState.assignedTo !== null) {
+  throw new Error("task-decomp should NOT be assigned to a worker during activation");
+}
+
+// getAuthorizedTasks should still return both tasks (decomp task is still in the allocation)
+const authTasks = allocation.getAuthorizedTasks("alloc-decomp", manager.id, decompTasks);
+if (authTasks.length !== 2) throw new Error("Both tasks (exec + decomp) should be authorized after activation");
+if (!authTasks.some(t => t.id === "task-decomp")) throw new Error("task-decomp should remain in authorized task set");
+
 console.log("Manager allocation tests passed.");

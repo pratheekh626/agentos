@@ -102,4 +102,22 @@ export class TaskDispatcher {
       updatedAt: new Date().toISOString(),
     };
   }
+
+  finalizeTask(task: Task): Task {
+    if (task.status !== "verification") {
+      throw new Error(`Only tasks in verification status can be finalized. Current status: ${task.status}`);
+    }
+
+    if (task.assignedTo) {
+      this.registry.update(task.assignedTo, {
+        status: "idle",
+      });
+    }
+
+    return {
+      ...task,
+      status: "completed",
+      updatedAt: new Date().toISOString(),
+    };
+  }
 }

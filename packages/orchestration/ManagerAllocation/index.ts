@@ -22,6 +22,15 @@ export interface ManagerAllocation {
   projectId: string;
   managerId: string;
   taskIds: string[];
+  /**
+   * Task IDs that the Boss intends the Manager to decompose before
+   * worker assignment.  activateAllocation() will NOT schedule these
+   * tasks through Runtime/Scheduler; they remain available for
+   * ManagerTaskLifecycle.decomposeAllocatedTask().
+   *
+   * Must be a subset of taskIds.  Defaults to [] when omitted.
+   */
+  decomposeTaskIds: string[];
   assignedBy: string;
   status: ManagerAllocationStatus;
   createdAt: string;
@@ -50,6 +59,8 @@ export interface CreateAllocationInput {
   projectId: string;
   managerId: string;
   taskIds: string[];
+  /** Subset of taskIds the Boss designates for manager decomposition. */
+  decomposeTaskIds?: string[];
   assignedBy: string;
   createdAt?: string;
 }
@@ -78,6 +89,7 @@ export class ManagerAllocationService {
 
     const allocation: ManagerAllocation = {
       ...input,
+      decomposeTaskIds: input.decomposeTaskIds ?? [],
       createdAt: input.createdAt ?? new Date().toISOString(),
       status: "PROPOSED",
     };
@@ -145,7 +157,11 @@ export class ManagerAllocationService {
       allocation.taskIds.map((taskId) => [taskId, tasks.get(taskId)!])
     );
     const scheduledTasks: Task[] = [];
+    const decomposeSet = new Set(allocation.decomposeTaskIds);
     for (const taskId of allocation.taskIds) {
+      // Skip tasks the Boss designated for manager decomposition —
+      // they remain unscheduled and available to ManagerTaskLifecycle.
+      if (decomposeSet.has(taskId)) continue;
       if (allocatedTasks.get(taskId)!.status !== "queued") continue;
 
       const restrictedTasks = this.getDependencyClosure(
@@ -243,6 +259,10 @@ export class ManagerAllocationService {
     if (decision.decisionType !== "ASSIGN_MANAGER" && decision.decisionType !== "APPROVE_ALLOCATION") return "Decision type cannot create allocation";
     if (!manager || manager.role !== "manager" || manager.managerId !== boss.id) return "Manager is outside Boss hierarchy";
     if (!input.taskIds.length || input.taskIds.some((id) => !tasks.has(id))) return "Allocation task IDs are invalid";
+    const taskIdSet = new Set(input.taskIds);
+    if ((input.decomposeTaskIds ?? []).some((id) => !taskIdSet.has(id))) {
+      return "decomposeTaskIds must be a subset of taskIds";
+    }
     return null;
   }
 

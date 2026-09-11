@@ -237,6 +237,23 @@ export class AgentRuntime {
     return completed;
   }
 
+  finalizeTask(task: Task): Task {
+    const completed = this.taskDispatcher.finalizeTask(task);
+
+    this.events.emit("task.completed", completed);
+
+    if (completed.assignedTo) {
+      this.emitStatusChanged(
+        completed.assignedTo,
+        "working",
+        "idle"
+      );
+    }
+
+    return completed;
+  }
+
+
   sendMessage(input: RuntimeMessageInput): A2AMessage {
     const from = this.registry.get(input.fromAgentId);
     const to = this.registry.get(input.toAgentId);
