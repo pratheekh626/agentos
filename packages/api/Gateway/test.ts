@@ -7,6 +7,7 @@ import { LiveEventStream } from "../../events/LiveEventStream";
 import { ClientMonitoringService } from "../../events/ClientMonitoring";
 import { RequirementUnderstandingService } from "../../agents/RequirementUnderstanding";
 import { ProjectIntakeService } from "../../agents/ProjectIntake";
+import { BossPlanningService } from "../../agents/BossPlanning";
 import {
   ApiGatewayServer,
   HeaderDevAuthenticator,
@@ -116,6 +117,7 @@ const stream = new LiveEventStream();
 const monitoring = new ClientMonitoringService(stream);
 const requirementService = new RequirementUnderstandingService();
 const projectIntakeService = new ProjectIntakeService(registry);
+const planningService = new BossPlanningService(registry);
 
 monitoring.registerProjectTask("proj-1", "task-1");
 
@@ -150,6 +152,7 @@ const services: ApiServicesContainer = {
   monitoringService: monitoring,
   requirementService,
   projectIntakeService,
+  planningService,
   bossAgentId: boss.id,
   taskProvider: {
     getTask: (id) => sampleTaskMap.get(id) ?? null,
@@ -414,6 +417,60 @@ async function runTests() {
     assert(json.error.code === "PROJECT_EXISTS", "Error code should be PROJECT_EXISTS");
   }
   console.log("TEST 21 passed: POST /projects duplicate projectId -> 409 Conflict");
+
+  // ── TEST 22: POST /projects/:projectId/plan unauthenticated -> 401 ───────────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/plan", {}, { planId: "plan-unauth" });
+    assert(res.statusCode === 401, "Unauthenticated planning request should return 401");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "UNAUTHENTICATED", "Error code should be UNAUTHENTICATED");
+  }
+  console.log("TEST 22 passed: POST /projects/:projectId/plan unauthenticated -> 401");
+
+  // ── TEST 23: POST /projects/:projectId/plan unauthorized client -> 403 ───────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/plan", authHeadersB, { planId: "plan-cross" });
+    assert(res.statusCode === 403, "Unauthorized client planning request should return 403");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "FORBIDDEN", "Error code should be FORBIDDEN");
+  }
+  console.log("TEST 23 passed: POST /projects/:projectId/plan unauthorized client -> 403");
+
+  // ── TEST 24: POST /projects/:projectId/plan non-existent project -> 404 ──────
+  {
+    const authHeadersMissing = {
+      "x-client-id": "client-a",
+      "x-authorized-projects": "nonexistent-proj",
+    };
+    const res = await request(server, "POST", "/projects/nonexistent-proj/plan", authHeadersMissing, { planId: "plan-404" });
+    assert(res.statusCode === 404, "Non-existent project planning request should return 404");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "NOT_FOUND", "Error code should be NOT_FOUND");
+  }
+  console.log("TEST 24 passed: POST /projects/:projectId/plan non-existent project -> 404");
+
+  // ── TEST 25: POST /projects/:projectId/plan valid request -> 201 Created ─────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/plan", authHeadersA, { planId: "plan-alpha-1" });
+    assert(res.statusCode === 201, `Valid planning request should return 201 Created (got ${res.statusCode}: ${res.body})`);
+    const json = res.json<ApiResponseSuccess<any>>();
+    assert(json.success === true, "Response success must be true");
+    assert(json.data.planId === "plan-alpha-1", "Plan ID must match");
+    assert(json.data.projectId === "proj-post-alpha", "ProjectId must match target project");
+    assert(json.data.plannedBy === boss.id, "PlannedBy must be authoritative Boss agent ID");
+    assert(Array.isArray(json.data.tasks), "Tasks must be an array of blueprint PlannedTask objects");
+    assert(json.data.tasks.length > 0, "Plan tasks array must not be empty");
+  }
+  console.log("TEST 25 passed: POST /projects/:projectId/plan valid request -> 201 Created & safe DTO");
+
+  // ── TEST 26: POST /projects/:projectId/plan duplicate plan ID -> 409 Conflict ──
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/plan", authHeadersA, { planId: "plan-alpha-1" });
+    assert(res.statusCode === 409, "Duplicate plan ID should return 409 Conflict");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "PLAN_EXISTS", "Error code should be PLAN_EXISTS");
+  }
+  console.log("TEST 26 passed: POST /projects/:projectId/plan duplicate plan ID -> 409 Conflict");
 
   console.log("\n✅ All ApiGatewayServer unit tests passed.");
 }

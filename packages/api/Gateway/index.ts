@@ -9,6 +9,7 @@ import type {
 } from "../../events/ClientMonitoring";
 import type { RequirementUnderstandingService } from "../../agents/RequirementUnderstanding";
 import type { ProjectIntakeService, Project } from "../../agents/ProjectIntake";
+import type { BossPlanningService, ExecutionPlan } from "../../agents/BossPlanning";
 
 // ── Authentication Boundary ──────────────────────────────────────────────────
 
@@ -120,6 +121,23 @@ export interface SafeProjectDto {
   createdAt: string;
 }
 
+export interface SafePlannedTaskDto {
+  id: string;
+  title: string;
+  description: string;
+  priority: string;
+  budget: number;
+  dependencies: string[];
+}
+
+export interface SafeExecutionPlanDto {
+  planId: string;
+  projectId: string;
+  plannedBy: string;
+  tasks: SafePlannedTaskDto[];
+  createdAt: string;
+}
+
 export function toSafeAgent(agent: Agent): SafeAgentDto {
   return {
     id: agent.id,
@@ -156,6 +174,23 @@ export function toSafeProject(project: Project): SafeProjectDto {
   };
 }
 
+export function toSafeExecutionPlan(plan: ExecutionPlan): SafeExecutionPlanDto {
+  return {
+    planId: plan.id,
+    projectId: plan.projectId,
+    plannedBy: plan.plannedBy,
+    tasks: plan.tasks.map((t) => ({
+      id: t.id,
+      title: t.title,
+      description: t.description,
+      priority: t.priority,
+      budget: t.budget,
+      dependencies: [...t.dependencies],
+    })),
+    createdAt: plan.createdAt,
+  };
+}
+
 // ── Service Container & Read Adapters ────────────────────────────────────────
 
 export interface TaskProvider {
@@ -164,7 +199,7 @@ export interface TaskProvider {
 }
 
 export interface ProjectProvider {
-  getProject(projectId: string): { id: string; status: string; title?: string } | null;
+  getProject(projectId: string): { id: string; status: string; title?: string; requirementId?: string; clientId?: string } | null;
 }
 
 export interface ApiServicesContainer {
@@ -172,6 +207,7 @@ export interface ApiServicesContainer {
   monitoringService: ClientMonitoringService;
   requirementService?: RequirementUnderstandingService;
   projectIntakeService?: ProjectIntakeService;
+  planningService?: BossPlanningService;
   bossAgentId?: string;
   taskProvider?: TaskProvider;
   projectProvider?: ProjectProvider;
@@ -255,6 +291,7 @@ export class ApiGatewayServer {
       const host = req.headers.host ?? "localhost";
       const parsedUrl = new URL(urlString, `http://${host}`);
       const pathname = parsedUrl.pathname;
+      const parts = pathname.split("/").filter(Boolean);
 
       // Route: GET /health (Unauthenticated public health check)
       if (method === "GET" && pathname === "/health") {
@@ -263,6 +300,84 @@ export class ApiGatewayServer {
           data: { status: "ok", service: "AGENTOS API Gateway" },
           timestamp,
         });
+      }
+
+      // Route: POST /projects/:projectId/plan (Governed Boss Planning Command)
+      if (method === "POST" && parts[0] === "projects" && parts.length === 3 && parts[2] === "plan") {
+        const projectId = parts[1];
+        if (!projectId) {
+          throw new ApiError(400, "BAD_REQUEST", "Project ID is required");
+        }
+
+        const authContext = this.authenticator.authenticate(req);
+        if (!authContext.isAuthenticated || !authContext.clientId) {
+          throw new ApiError(401, "UNAUTHENTICATED", "Authentication required. Missing or invalid authentication credentials.");
+        }
+
+        const clientAuth: ClientAuthContext = {
+          clientId: authContext.clientId,
+          authorizedProjectIds: authContext.authorizedProjectIds,
+        };
+
+        // Check authorization via ClientMonitoringService
+        const summary = this.services.monitoringService.getProjectSummary(clientAuth, projectId);
+        if (!summary && !clientAuth.authorizedProjectIds.includes(projectId)) {
+          throw new ApiError(403, "FORBIDDEN", `Access denied for project: ${projectId}`);
+        }
+
+        // Retrieve project
+        const project = (this.services.projectIntakeService?.get(projectId)
+          ?? this.services.projectProvider?.getProject(projectId)) as any;
+
+        if (!project) {
+          throw new ApiError(404, "NOT_FOUND", `Project not found: ${projectId}`);
+        }
+
+        // Retrieve requirement
+        const requirementId = project.requirementId;
+        const requirement = requirementId ? this.services.requirementService?.get(requirementId) : undefined;
+
+        if (!requirement || requirement.status !== "ready") {
+          throw new ApiError(400, "BAD_REQUEST", "Requirement is not ready for planning");
+        }
+
+        if (!this.services.planningService) {
+          throw new ApiError(500, "SERVICE_UNAVAILABLE", "BossPlanningService is not configured");
+        }
+
+        const bossId = this.services.bossAgentId ?? this.services.registry.getByRole("boss")[0]?.id;
+        if (!bossId) {
+          throw new ApiError(500, "SERVICE_UNAVAILABLE", "No registered Boss agent available for planning");
+        }
+
+        const body = await readJsonBody(req);
+        const planId = (body.planId || `plan-${Date.now()}-${Math.floor(Math.random() * 1000)}`).trim();
+
+        let planningResult;
+        try {
+          planningResult = this.services.planningService.plan(
+            planId,
+            project,
+            requirement,
+            bossId,
+            timestamp
+          );
+        } catch (err: any) {
+          if (err.message && err.message.includes("Plan already exists")) {
+            throw new ApiError(409, "PLAN_EXISTS", `A plan with ID '${planId}' already exists`);
+          }
+          throw err;
+        }
+
+        if (planningResult.decision === "CREATED" && planningResult.plan) {
+          return sendJson(201, {
+            success: true,
+            data: toSafeExecutionPlan(planningResult.plan),
+            timestamp,
+          });
+        }
+
+        throw new ApiError(400, "PLANNING_REJECTED", planningResult.reason || "Planning request rejected");
       }
 
       // Route: POST /projects (Governed Client Project Intake)
@@ -379,8 +494,6 @@ export class ApiGatewayServer {
         clientId: authContext.clientId ?? "unknown",
         authorizedProjectIds: authContext.authorizedProjectIds,
       };
-
-      const parts = pathname.split("/").filter(Boolean);
 
       // Projects endpoints: /projects/:projectId/*
       if (parts[0] === "projects" && parts.length >= 2) {
