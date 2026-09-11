@@ -31,6 +31,7 @@ import type {
   Meeting,
   MeetingDecision,
 } from "../../agents/ConferenceRoom";
+import type { AllocationEvents, ManagerAllocation } from "../../orchestration/ManagerAllocation";
 
 export class AuditEventBridge {
   private readonly ledger: AuditLedger;
@@ -42,6 +43,7 @@ export class AuditEventBridge {
   private readonly escalationEventBus: EventBus<EscalationEvents>;
   private readonly interventionEventBus: EventBus<InterventionEvents>;
   private readonly conferenceEventBus: EventBus<ConferenceEvents>;
+  private readonly allocationEventBus: EventBus<AllocationEvents>;
 
   private readonly evidenceHandler = (evidence: Evidence): void => {
     this.ledger.append({
@@ -326,6 +328,26 @@ export class AuditEventBridge {
     });
   };
 
+  private readonly handleAllocation = (allocation: ManagerAllocation): void => {
+    const statusType = {
+      PROPOSED: "MANAGER_ALLOCATION_CREATED",
+      APPROVED: "MANAGER_ALLOCATION_APPROVED",
+      ACTIVE: "MANAGER_ALLOCATION_ACTIVATED",
+      REJECTED: "MANAGER_ALLOCATION_REJECTED",
+      COMPLETED: "MANAGER_ALLOCATION_ACTIVATED",
+    } as const;
+    this.ledger.append({
+      id: `audit-allocation-${allocation.id}-${allocation.status}`,
+      type: statusType[allocation.status],
+      actorId: allocation.assignedBy,
+      targetId: allocation.managerId,
+      taskId: allocation.taskIds[0] ?? null,
+      action: `manager_allocation_${allocation.status.toLowerCase()}`,
+      details: { organizationId: allocation.organizationId, meetingId: allocation.meetingId, decisionId: allocation.decisionId, taskIds: allocation.taskIds },
+      timestamp: allocation.createdAt,
+    });
+  };
+
   constructor(
     ledger: AuditLedger,
     eventBus: EventBus<ExecutionEvents>,
@@ -335,7 +357,8 @@ export class AuditEventBridge {
     recoveryEventBus?: EventBus<RecoveryEvents>,
     escalationEventBus?: EventBus<EscalationEvents>,
     interventionEventBus?: EventBus<InterventionEvents>,
-    conferenceEventBus?: EventBus<ConferenceEvents>
+    conferenceEventBus?: EventBus<ConferenceEvents>,
+    allocationEventBus?: EventBus<AllocationEvents>
   ) {
     this.ledger = ledger;
     this.eventBus = eventBus;
@@ -353,6 +376,7 @@ export class AuditEventBridge {
       interventionEventBus ?? new EventBus<InterventionEvents>();
     this.conferenceEventBus =
       conferenceEventBus ?? new EventBus<ConferenceEvents>();
+    this.allocationEventBus = allocationEventBus ?? new EventBus<AllocationEvents>();
 
     this.eventBus.on(
       "execution.evidence_created",
@@ -432,6 +456,10 @@ export class AuditEventBridge {
       "meeting.completed",
       this.handleMeetingCompleted
     );
+    this.allocationEventBus.on("allocation.created", this.handleAllocation);
+    this.allocationEventBus.on("allocation.approved", this.handleAllocation);
+    this.allocationEventBus.on("allocation.activated", this.handleAllocation);
+    this.allocationEventBus.on("allocation.rejected", this.handleAllocation);
   }
 
   disconnect(): void {
@@ -513,6 +541,10 @@ export class AuditEventBridge {
       "meeting.completed",
       this.handleMeetingCompleted
     );
+    this.allocationEventBus.off("allocation.created", this.handleAllocation);
+    this.allocationEventBus.off("allocation.approved", this.handleAllocation);
+    this.allocationEventBus.off("allocation.activated", this.handleAllocation);
+    this.allocationEventBus.off("allocation.rejected", this.handleAllocation);
   }
 
   private appendRecoveryEvent(
