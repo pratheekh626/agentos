@@ -24,6 +24,9 @@
     "test:manager-task-lifecycle-e2e": "tsx scripts/test-manager-task-lifecycle.ts",
     "test:live-coordination": "tsx packages/orchestration/LiveCoordination/test.ts",
     "test:live-coordination-e2e": "tsx scripts/test-live-coordination.ts",
+    "test:live-event-stream": "tsx packages/events/LiveEventStream/test.ts",
+    "test:live-event-stream-e2e": "tsx scripts/test-live-event-stream.ts",
+
 
     "test:requirements": "tsx packages/agents/RequirementUnderstanding/test.ts",
     "test:tasks": "tsx packages/orchestration/TaskDispatcher/test.ts",
