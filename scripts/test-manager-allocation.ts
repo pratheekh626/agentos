@@ -63,6 +63,7 @@ if (tasks.get("task")?.assignedTo !== null) throw new Error("Allocation directly
 if (execution.approveAllocation("allocation", boss.id).decision !== "APPROVED") throw new Error("Allocation approval failed");
 const active = execution.activateAllocation("allocation", tasks);
 if (active.decision !== "ACTIVATED" || active.scheduledTasks[0]?.assignedTo !== worker.id) throw new Error("Governed allocation activation failed");
+if (tasks.get("task")?.assignedTo !== worker.id) throw new Error("Worker did not receive the allocated task");
 if (messages.getByAgent(managerA.id).length < 2) throw new Error("Manager notifications missing");
 if (audit.getByType("MANAGER_ALLOCATION_CREATED").length !== 1) throw new Error("Allocation creation was not audited");
 if (audit.getByType("MANAGER_ALLOCATION_APPROVED").length !== 1) throw new Error("Allocation approval was not audited");

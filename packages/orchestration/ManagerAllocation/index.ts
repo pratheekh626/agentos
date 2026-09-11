@@ -133,16 +133,47 @@ export class ManagerAllocationService {
     if (!manager || manager.role !== "manager") return this.rejected("Manager is not registered");
     if (manager.status === "paused" || manager.status === "offline") return this.rejected("Manager is unavailable");
     if (allocation.taskIds.some((taskId) => !tasks.has(taskId))) return this.rejected("Allocation references a missing task");
+    const allocationTaskIds = new Set(allocation.taskIds);
+    for (const taskId of allocation.taskIds) {
+      const task = tasks.get(taskId)!;
+      if (task.dependencies.some((dependencyId) => !allocationTaskIds.has(dependencyId))) {
+        return this.rejected("Allocation task dependencies must stay inside the allocation");
+      }
+    }
 
+    const allocatedTasks = new Map(
+      allocation.taskIds.map((taskId) => [taskId, tasks.get(taskId)!])
+    );
     const scheduledTasks: Task[] = [];
     for (const taskId of allocation.taskIds) {
-      const result = this.runtime.schedule(tasks, manager, riskScore);
-      if (result.decision !== "SCHEDULED" || !result.task) {
-        return this.rejected(`Allocation scheduling stopped: ${result.reason}`);
+      if (allocatedTasks.get(taskId)!.status !== "queued") continue;
+
+      const restrictedTasks = this.getDependencyClosure(
+        taskId,
+        allocatedTasks
+      );
+      let targetScheduled = false;
+
+      while (!targetScheduled) {
+        const result = this.runtime.schedule(
+          restrictedTasks,
+          manager,
+          riskScore
+        );
+        if (result.decision !== "SCHEDULED" || !result.task) {
+          return this.rejected(`Allocation scheduling stopped: ${result.reason}`);
+        }
+        if (!restrictedTasks.has(result.task.id)) {
+          return this.rejected(
+            `Scheduler returned a task outside the allocation: ${result.task.id}`
+          );
+        }
+        restrictedTasks.set(result.task.id, result.task);
+        allocatedTasks.set(result.task.id, result.task);
+        tasks.set(result.task.id, result.task);
+        scheduledTasks.push(result.task);
+        targetScheduled = result.task.id === taskId;
       }
-      tasks.set(result.task.id, result.task);
-      scheduledTasks.push(result.task);
-      if (result.task.id === taskId) continue;
     }
     const updated = { ...allocation, status: "ACTIVE" as const };
     this.allocations.set(allocationId, updated);
@@ -163,6 +194,40 @@ export class ManagerAllocationService {
 
   get(id: string): ManagerAllocation | undefined { return this.allocations.get(id); }
   getAll(): ManagerAllocation[] { return Array.from(this.allocations.values()); }
+
+  getAuthorizedTasks(
+    allocationId: string,
+    managerId: string,
+    tasks: Map<string, Task>
+  ): Task[] {
+    const allocation = this.allocations.get(allocationId);
+
+    if (
+      !allocation ||
+      allocation.status !== "ACTIVE" ||
+      allocation.managerId !== managerId
+    ) {
+      return [];
+    }
+
+    return allocation.taskIds
+      .map((taskId) => tasks.get(taskId))
+      .filter((task): task is Task => task !== undefined);
+  }
+
+  private getDependencyClosure(
+    taskId: string,
+    tasks: Map<string, Task>,
+    closure = new Map<string, Task>()
+  ): Map<string, Task> {
+    const task = tasks.get(taskId);
+    if (!task || closure.has(taskId)) return closure;
+    closure.set(taskId, task);
+    for (const dependencyId of task.dependencies) {
+      this.getDependencyClosure(dependencyId, tasks, closure);
+    }
+    return closure;
+  }
 
   private validateCreation(input: CreateAllocationInput, tasks: Map<string, Task>): string | null {
     if (!input.id.trim() || !input.organizationId.trim() || !input.projectId.trim()) return "Allocation identifiers are required";
