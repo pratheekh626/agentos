@@ -738,6 +738,136 @@ export class ApiGatewayServer {
         throw new ApiError(400, "APPROVAL_REJECTED", approveResult.reason || "Manager allocation approval failed");
       }
 
+      // Route: POST /projects/:projectId/activate-allocation (Governed Allocation Activation Command)
+      if (method === "POST" && parts[0] === "projects" && parts.length === 3 && parts[2] === "activate-allocation") {
+        const projectId = parts[1];
+        if (!projectId) {
+          throw new ApiError(400, "BAD_REQUEST", "Project ID is required");
+        }
+
+        const authContext = this.authenticator.authenticate(req);
+        if (!authContext.isAuthenticated || !authContext.clientId) {
+          throw new ApiError(401, "UNAUTHENTICATED", "Authentication required. Missing or invalid authentication credentials.");
+        }
+
+        const clientAuth: ClientAuthContext = {
+          clientId: authContext.clientId,
+          authorizedProjectIds: authContext.authorizedProjectIds,
+        };
+
+        // Check authorization via ClientMonitoringService
+        const summary = this.services.monitoringService.getProjectSummary(clientAuth, projectId);
+        if (!summary && !clientAuth.authorizedProjectIds.includes(projectId)) {
+          throw new ApiError(403, "FORBIDDEN", `Access denied for project: ${projectId}`);
+        }
+
+        // Retrieve project
+        const project = (this.services.projectIntakeService?.get(projectId)
+          ?? this.services.projectProvider?.getProject(projectId)) as any;
+
+        if (!project) {
+          throw new ApiError(404, "NOT_FOUND", `Project not found: ${projectId}`);
+        }
+
+        if (!this.services.managerAllocationService) {
+          throw new ApiError(500, "SERVICE_UNAVAILABLE", "ManagerAllocationService is not configured");
+        }
+
+        const body = await readJsonBody(req);
+        const allocationId = body.allocationId ? String(body.allocationId).trim() : "";
+        if (!allocationId) {
+          throw new ApiError(400, "BAD_REQUEST", "Allocation ID is required");
+        }
+
+        const allocation = this.services.managerAllocationService.get(allocationId);
+        if (!allocation) {
+          throw new ApiError(404, "NOT_FOUND", `Allocation not found: ${allocationId}`);
+        }
+
+        if (allocation.projectId !== projectId) {
+          throw new ApiError(400, "BAD_REQUEST", `Allocation '${allocationId}' does not belong to project '${projectId}'`);
+        }
+
+        const org = this.services.organizationService?.getOrganization();
+        if (org && allocation.organizationId && org.id !== allocation.organizationId) {
+          throw new ApiError(400, "BAD_REQUEST", `Allocation '${allocationId}' belongs to another organization`);
+        }
+
+        const defaultBossId = this.services.bossAgentId ?? this.services.registry.getByRole("boss")[0]?.id;
+        const activatorId = body.activatedBy ? String(body.activatedBy).trim() : defaultBossId;
+
+        if (!activatorId) {
+          throw new ApiError(403, "FORBIDDEN", "Activator agent ID is required");
+        }
+
+        const activatorAgent = this.services.registry.get(activatorId);
+        if (!activatorAgent) {
+          throw new ApiError(403, "FORBIDDEN", `Activator agent not found: ${activatorId}`);
+        }
+
+        if (activatorAgent.role !== "boss") {
+          throw new ApiError(403, "FORBIDDEN", `Agent '${activatorId}' is a ${activatorAgent.role}, only a Boss can activate allocation`);
+        }
+
+        if (org && org.bossId !== activatorId) {
+          throw new ApiError(403, "FORBIDDEN", `Boss '${activatorId}' belongs to another organization`);
+        }
+
+        if (activatorId !== allocation.assignedBy) {
+          throw new ApiError(403, "FORBIDDEN", `Only the assigned Boss '${allocation.assignedBy}' can activate allocation '${allocationId}'`);
+        }
+
+        if (allocation.status !== "APPROVED") {
+          if (allocation.status === "ACTIVE") {
+            throw new ApiError(409, "ALLOCATION_ALREADY_ACTIVE", `Allocation '${allocationId}' is already ACTIVE`);
+          }
+          throw new ApiError(409, "ALLOCATION_NOT_APPROVED", `Allocation '${allocationId}' is in state '${allocation.status}', must be APPROVED before activation`);
+        }
+
+        // Build project task map for activateAllocation
+        const projectTasks: Task[] = [];
+        if (this.services.taskProvider && this.services.taskProvider.getTasksForProject) {
+          projectTasks.push(...this.services.taskProvider.getTasksForProject(projectId));
+        }
+        if (this.services.planExecutionService && this.services.planningService) {
+          const plan = this.services.planningService.getAll().find((p) => p.projectId === projectId);
+          if (plan) {
+            const executedTasks = this.services.planExecutionService.get(plan.id);
+            if (executedTasks) {
+              for (const t of executedTasks) {
+                if (!projectTasks.some((pt) => pt.id === t.id)) {
+                  projectTasks.push(t);
+                }
+              }
+            }
+          }
+        }
+
+        const taskMap = new Map<string, Task>(projectTasks.map((t) => [t.id, t]));
+
+        const activateResult = this.services.managerAllocationService.activateAllocation(allocationId, taskMap);
+
+        if (activateResult.decision === "REJECTED") {
+          if (activateResult.reason.includes("must be approved before activation")) {
+            throw new ApiError(409, "ALLOCATION_NOT_APPROVED", activateResult.reason);
+          }
+          if (activateResult.reason.includes("Manager is not registered") || activateResult.reason.includes("Manager is unavailable")) {
+            throw new ApiError(400, "MANAGER_UNAVAILABLE", activateResult.reason);
+          }
+          throw new ApiError(400, "ACTIVATION_REJECTED", activateResult.reason);
+        }
+
+        if (activateResult.decision === "ACTIVATED" && activateResult.allocation) {
+          return sendJson(200, {
+            success: true,
+            data: toSafeAllocation(activateResult.allocation),
+            timestamp,
+          });
+        }
+
+        throw new ApiError(400, "ACTIVATION_REJECTED", activateResult.reason || "Manager allocation activation failed");
+      }
+
       // Route: POST /projects (Governed Client Project Intake)
       if (method === "POST" && pathname === "/projects") {
         const authContext = this.authenticator.authenticate(req);

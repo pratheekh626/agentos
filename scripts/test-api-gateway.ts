@@ -483,6 +483,7 @@ async function runIntegrationTest() {
         decisionId: e2eDecision.id,
         managerId: manager.id,
         taskIds: [targetTaskId],
+        decomposeTaskIds: [targetTaskId],
       };
 
       const res = await httpPost(port, `/projects/${newProjectId}/allocate-manager`, authHeadersAlpha, allocPayload);
@@ -511,8 +512,9 @@ async function runIntegrationTest() {
       assert(dupeJson.error.code === "ALLOCATION_EXISTS", "Error code must be ALLOCATION_EXISTS");
       console.log("STEP 8c: Duplicate allocation attempt rejected with 409 Conflict");
 
-      // Save allocationId for STEP 9
+      // Save allocationId and targetTaskId for STEP 9 & 10
       (globalThis as any).e2eAllocationId = allocPayload.allocationId;
+      (globalThis as any).e2eTargetTaskId = targetTaskId;
     }
 
     // ── STEP 9: POST /projects/:projectId/approve-allocation (Governed Boss Approval Command)
@@ -565,7 +567,64 @@ async function runIntegrationTest() {
       console.log("STEP 9e: Duplicate approval attempt rejected with 409 Conflict");
     }
 
-    // ── STEP 10: Read Endpoints GET /agents & GET /tasks ─────────────────────
+    // ── STEP 10: POST /projects/:projectId/activate-allocation (Governed Activation Command)
+    {
+      const targetAllocId = (globalThis as any).e2eAllocationId;
+      const activatePayload = {
+        allocationId: targetAllocId,
+        activatedBy: boss.id,
+      };
+
+      // Security check: Manager activation attempt -> 403
+      const mgrActivate = await httpPost(port, `/projects/${newProjectId}/activate-allocation`, authHeadersAlpha, {
+        allocationId: targetAllocId,
+        activatedBy: manager.id,
+      });
+      assert(mgrActivate.statusCode === 403, "Manager activation attempt must receive 403 Forbidden");
+      console.log("STEP 10a: Manager activation attempt rejected with 403 Forbidden");
+
+      // Security check: Worker activation attempt -> 403
+      const wkrActivate = await httpPost(port, `/projects/${newProjectId}/activate-allocation`, authHeadersAlpha, {
+        allocationId: targetAllocId,
+        activatedBy: worker.id,
+      });
+      assert(wkrActivate.statusCode === 403, "Worker activation attempt must receive 403 Forbidden");
+      console.log("STEP 10b: Worker activation attempt rejected with 403 Forbidden");
+
+      // Security check: Client Beta activation attempt -> 403
+      const betaActivate = await httpPost(port, `/projects/${newProjectId}/activate-allocation`, authHeadersBeta, activatePayload);
+      assert(betaActivate.statusCode === 403, "Client Beta activate-allocation attempt must receive 403 Forbidden");
+      console.log("STEP 10c: Client Beta activate-allocation attempt rejected with 403 Forbidden");
+
+      // Valid Boss activation by Client Alpha over HTTP socket
+      const res = await httpPost(port, `/projects/${newProjectId}/activate-allocation`, authHeadersAlpha, activatePayload);
+      assert(res.statusCode === 200, `POST /projects/:projectId/activate-allocation should return 200 OK (got ${res.statusCode}: ${res.body})`);
+      const json = res.json<ApiResponseSuccess<any>>();
+      assert(json.success === true, "Response success must be true");
+      assert(json.data.allocationId === targetAllocId, "Allocation ID must match");
+      assert(json.data.status === "ACTIVE", "Allocation status MUST transition to 'ACTIVE'");
+
+      // Boundary assertion: worker remains idle & decomposeTaskIds task remains queued/unassigned
+      assert(worker.status === "idle", "Worker agent must remain idle (no automatic execution triggered by activation)");
+      const targetTaskId = (globalThis as any).e2eTargetTaskId;
+      const getTaskRes = await httpGet(port, `/tasks/${targetTaskId}`, authHeadersAlpha);
+      if (getTaskRes.statusCode === 200) {
+        const taskData = getTaskRes.json<ApiResponseSuccess<any>>().data;
+        assert(taskData.assignedTo === null, "Decomposed parent task must remain unassigned");
+        assert(taskData.status === "queued", "Decomposed parent task must remain queued");
+        assert(taskData.spent === 0, "No credits spent by activation itself");
+      }
+      console.log("STEP 10d: POST /projects/:projectId/activate-allocation succeeded: 200 OK (status transitions to ACTIVE, decompose task remains queued/unassigned & unexecuted)");
+
+      // Duplicate activation attempt -> 409 Conflict
+      const dupeActivate = await httpPost(port, `/projects/${newProjectId}/activate-allocation`, authHeadersAlpha, activatePayload);
+      assert(dupeActivate.statusCode === 409, "Duplicate activation attempt must return 409 Conflict");
+      const dupeJson = dupeActivate.json<ApiResponseError>();
+      assert(dupeJson.error.code === "ALLOCATION_ALREADY_ACTIVE", "Error code must be ALLOCATION_ALREADY_ACTIVE");
+      console.log("STEP 10e: Duplicate activation attempt rejected with 409 Conflict");
+    }
+
+    // ── STEP 11: Read Endpoints GET /agents & GET /tasks ─────────────────────
     {
       const resAgents = await httpGet(port, "/agents", authHeadersAlpha);
       assert(resAgents.statusCode === 200, "GET /agents should return 200");
@@ -574,14 +633,14 @@ async function runIntegrationTest() {
 
       const resTask = await httpGet(port, `/tasks/${taskId}`, authHeadersAlpha);
       assert(resTask.statusCode === 200, "GET /tasks/:taskId should return 200");
-      console.log("STEP 10: GET /agents and GET /tasks/:taskId verified");
+      console.log("STEP 11: GET /agents and GET /tasks/:taskId verified");
     }
 
-    // ── STEP 11: Unauthorized & Unauthenticated Rejections ────────────────────
+    // ── STEP 12: Unauthorized & Unauthenticated Rejections ────────────────────
     {
       const resUnauth = await httpPost(port, "/projects", {}, { input: "Build feature" });
       assert(resUnauth.statusCode === 401, "Unauthenticated POST /projects must return 401 Unauthorized");
-      console.log("STEP 11: Unauthenticated POST /projects rejected with 401 Unauthorized");
+      console.log("STEP 12: Unauthenticated POST /projects rejected with 401 Unauthorized");
     }
 
     console.log(`

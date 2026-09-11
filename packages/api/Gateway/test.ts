@@ -138,11 +138,17 @@ const projectIntakeService = new ProjectIntakeService(registry);
 const planningService = new BossPlanningService(registry);
 const taskDispatcher = new TaskDispatcher(registry);
 const planExecutionService = new PlanExecutionService(registry, taskDispatcher);
+const mockRuntime: any = {
+  schedule: (restrictedTasks: any) => ({
+    decision: "SCHEDULED",
+    task: Array.from(restrictedTasks.values())[0] ?? null,
+  }),
+};
 const managerAllocationService = new ManagerAllocationService(
   registry,
   organizationService,
   conferenceRoomService,
-  null as any,
+  mockRuntime,
   messages
 );
 
@@ -949,6 +955,186 @@ async function runTests() {
     assert(json.error.code === "ALLOCATION_ALREADY_APPROVED", "Error code should be ALLOCATION_ALREADY_APPROVED");
   }
   console.log("TEST 80 passed: Already approved allocation -> 409 Conflict");
+
+  // ── TEST 82: POST /projects/:projectId/activate-allocation unauthenticated -> 401 ──
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/activate-allocation", {}, { allocationId: "alloc-alpha-1" });
+    assert(res.statusCode === 401, "Unauthenticated activate-allocation should return 401");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "UNAUTHENTICATED", "Error code should be UNAUTHENTICATED");
+  }
+  console.log("TEST 82 passed: POST /projects/:projectId/activate-allocation unauthenticated -> 401");
+
+  // ── TEST 83: Client B attempting to activate Client A allocation -> 403 ────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/activate-allocation", authHeadersB, { allocationId: "alloc-alpha-1" });
+    assert(res.statusCode === 403, "Client B activating Client A allocation should return 403");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "FORBIDDEN", "Error code should be FORBIDDEN");
+  }
+  console.log("TEST 83 passed: Client B attempting to activate Client A allocation -> 403");
+
+  // ── TEST 84: Unknown project -> 404 ─────────────────────────────────────────
+  {
+    const authHeadersMissing = {
+      "x-client-id": "client-a",
+      "x-authorized-projects": "nonexistent-proj",
+    };
+    const res = await request(server, "POST", "/projects/nonexistent-proj/activate-allocation", authHeadersMissing, { allocationId: "alloc-alpha-1" });
+    assert(res.statusCode === 404, "Unknown project activate-allocation should return 404");
+  }
+  console.log("TEST 84 passed: Unknown project -> 404");
+
+  // ── TEST 85: Unknown allocation -> 404 ──────────────────────────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/activate-allocation", authHeadersA, { allocationId: "alloc-nonexistent" });
+    assert(res.statusCode === 404, "Unknown allocation activate-allocation should return 404");
+  }
+  console.log("TEST 85 passed: Unknown allocation -> 404");
+
+  // ── TEST 86: Allocation from another project -> 400 ─────────────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-tamper/activate-allocation", authHeadersA, { allocationId: "alloc-alpha-1" });
+    assert(res.statusCode === 400, "Allocation from another project should return 400");
+  }
+  console.log("TEST 86 passed: Allocation from another project -> 400");
+
+  // ── TEST 87: Missing allocationId -> 400 ────────────────────────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/activate-allocation", authHeadersA, {});
+    assert(res.statusCode === 400, "Missing allocationId should return 400");
+  }
+  console.log("TEST 87 passed: Missing allocationId -> 400");
+
+  // ── TEST 88-92: Non-Boss / Manager / Worker / Wrong Boss activation -> 403 ──
+  {
+    // Manager caller
+    const resMgr = await request(server, "POST", "/projects/proj-post-alpha/activate-allocation", authHeadersA, {
+      allocationId: "alloc-alpha-1",
+      activatedBy: manager.id,
+    });
+    assert(resMgr.statusCode === 403, "Manager attempting activation must be rejected with 403");
+
+    // Worker caller
+    const resWkr = await request(server, "POST", "/projects/proj-post-alpha/activate-allocation", authHeadersA, {
+      allocationId: "alloc-alpha-1",
+      activatedBy: worker.id,
+    });
+    assert(resWkr.statusCode === 403, "Worker attempting activation must be rejected with 403");
+
+    // Wrong Boss
+    const resOtherBoss = await request(server, "POST", "/projects/proj-post-alpha/activate-allocation", authHeadersA, {
+      allocationId: "alloc-alpha-1",
+      activatedBy: otherBoss.id,
+    });
+    assert(resOtherBoss.statusCode === 403, "Boss from wrong organization must be rejected with 403");
+
+    // Unknown activator agent
+    const resUnknown = await request(server, "POST", "/projects/proj-post-alpha/activate-allocation", authHeadersA, {
+      allocationId: "alloc-alpha-1",
+      activatedBy: "agent-unknown",
+    });
+    assert(resUnknown.statusCode === 403, "Unknown activator agent must be rejected with 403");
+  }
+  console.log("TEST 88-92 passed: Non-Boss / Manager / Worker / Wrong Boss activation rejected (403)");
+
+  // ── TEST 93: Allocation in PROPOSED state cannot activate -> 409 Conflict ──
+  {
+    // Create a new allocation in PROPOSED state
+    const propAllocPayload = {
+      allocationId: "alloc-proposed-1",
+      meetingId: allocMeeting.id,
+      decisionId: allocDecision.id,
+      managerId: manager.id,
+      taskIds: ["plan-alpha-1-requirement-1"],
+      decomposeTaskIds: ["plan-alpha-1-requirement-1"],
+    };
+    const createRes = await request(server, "POST", "/projects/proj-post-alpha/allocate-manager", authHeadersA, propAllocPayload);
+    assert(createRes.statusCode === 201, "Should create PROPOSED allocation");
+
+    const res = await request(server, "POST", "/projects/proj-post-alpha/activate-allocation", authHeadersA, {
+      allocationId: "alloc-proposed-1",
+      activatedBy: boss.id,
+    });
+    assert(res.statusCode === 409, "Allocation in PROPOSED state cannot activate and must return 409 Conflict");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "ALLOCATION_NOT_APPROVED", "Error code should be ALLOCATION_NOT_APPROVED");
+  }
+  console.log("TEST 93 passed: Allocation in PROPOSED state cannot activate -> 409 Conflict");
+
+  // ── TEST 94-108: Valid Boss activation & comprehensive boundary assertions ────
+  {
+    const validActivatePayload = {
+      allocationId: "alloc-alpha-1",
+      activatedBy: boss.id,
+    };
+    const res = await request(server, "POST", "/projects/proj-post-alpha/activate-allocation", authHeadersA, validActivatePayload);
+    assert(res.statusCode === 200, `Valid Boss activation should return 200 OK (got ${res.statusCode}: ${res.body})`);
+    const json = res.json<ApiResponseSuccess<any>>();
+    assert(json.success === true, "Response success must be true");
+
+    const alloc = json.data;
+    assert(alloc.allocationId === "alloc-alpha-1", "Allocation ID must match");
+    assert(alloc.status === "ACTIVE", "Allocation status MUST transition to 'ACTIVE'");
+    assert(alloc.assignedBy === boss.id, "AssignedBy must match Boss ID");
+
+    // Safe DTO assertion (only allowed fields present)
+    const allowedKeys = new Set([
+      "allocationId", "projectId", "organizationId", "meetingId",
+      "decisionId", "managerId", "taskIds", "decomposeTaskIds",
+      "assignedBy", "status", "createdAt"
+    ]);
+    for (const key of Object.keys(alloc)) {
+      assert(allowedKeys.has(key), `Disallowed field in SafeManagerAllocationDto: ${key}`);
+    }
+
+    // Persisted in domain state
+    const stored = managerAllocationService.get("alloc-alpha-1");
+    assert(stored !== undefined && stored.status === "ACTIVE", "Activation must be persisted in domain service state");
+
+    // Manager receives bounded authority
+    const taskMap = new Map<string, Task>();
+    for (const t of planExecutionService.get("plan-alpha-1") ?? []) {
+      taskMap.set(t.id, t);
+    }
+    const authorizedTasks = managerAllocationService.getAuthorizedTasks("alloc-alpha-1", manager.id, taskMap);
+    assert(authorizedTasks.length > 0, "Manager must receive bounded task authority after activation");
+
+    // Boundary assertions: decomposeTaskIds parent remains queued and unassigned, workers remain idle, no execution/evidence/verification/QA/payment
+    assert(worker.status === "idle", "Worker agent must remain idle");
+    const getTaskRes = await request(server, "GET", "/tasks/plan-alpha-1-requirement-1", authHeadersA);
+    if (getTaskRes.statusCode === 200) {
+      const taskJson = getTaskRes.json<ApiResponseSuccess<any>>();
+      assert(taskJson.data.assignedTo === null, "Decomposed task must remain unassigned");
+      assert(taskJson.data.status === "queued", "Decomposed task must remain queued");
+      assert(taskJson.data.spent === 0, "No credits spent");
+    }
+  }
+  console.log("TEST 94-108 passed: Valid Boss activation -> 200 OK, APPROVED -> ACTIVE, manager receives authority, decomposeTaskIds remains queued/unassigned & unexecuted");
+
+  // ── TEST 109-110: Body clientId & activatedBy tampering strictly rejected ──────
+  {
+    const tamperPayload = {
+      allocationId: "alloc-proposed-1",
+      activatedBy: manager.id,
+      clientId: "spoofed-client-id",
+    };
+    const res = await request(server, "POST", "/projects/proj-post-alpha/activate-allocation", authHeadersA, tamperPayload);
+    assert(res.statusCode === 403, "Tampered activation with Manager activator must be rejected with 403");
+  }
+  console.log("TEST 109-110 passed: Body clientId & activatedBy tampering strictly rejected");
+
+  // ── TEST 111: Already ACTIVE allocation -> 409 Conflict ────────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/activate-allocation", authHeadersA, {
+      allocationId: "alloc-alpha-1",
+      activatedBy: boss.id,
+    });
+    assert(res.statusCode === 409, "Already ACTIVE allocation should return 409 Conflict");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "ALLOCATION_ALREADY_ACTIVE", "Error code should be ALLOCATION_ALREADY_ACTIVE");
+  }
+  console.log("TEST 111 passed: Already ACTIVE allocation -> 409 Conflict");
 
   console.log("\n✅ All ApiGatewayServer unit tests passed.");
 }
