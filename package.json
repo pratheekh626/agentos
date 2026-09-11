@@ -14,6 +14,7 @@
     "test:project-verification": "tsx packages/orchestration/ProjectVerification/test.ts",
     "test:project-qa": "tsx packages/orchestration/ProjectQA/test.ts",
     "test:project-prooftopay": "tsx packages/orchestration/ProjectProofToPay/test.ts",
+    "test:e2e": "tsx scripts/e2e-project-lifecycle.ts",
     "test:requirements": "tsx packages/agents/RequirementUnderstanding/test.ts",
     "test:tasks": "tsx packages/orchestration/TaskDispatcher/test.ts",
     "test:dependencies": "tsx packages/orchestration/Dependencies/test.ts",
