@@ -59,6 +59,7 @@ import { ClientMonitoringService } from "../packages/events/ClientMonitoring";
 import { RequirementUnderstandingService } from "../packages/agents/RequirementUnderstanding";
 import { ProjectIntakeService, type Project } from "../packages/agents/ProjectIntake";
 import { BossPlanningService } from "../packages/agents/BossPlanning";
+import { PlanExecutionService } from "../packages/orchestration/PlanExecution";
 import { ApiGatewayServer, type ApiResponseSuccess, type ApiResponseError } from "../packages/api/Gateway";
 import type { Task } from "../packages/core/Task";
 
@@ -192,6 +193,7 @@ async function runIntegrationTest() {
   const requirementService = new RequirementUnderstandingService();
   const projectIntakeService = new ProjectIntakeService(registry);
   const planningService = new BossPlanningService(registry);
+  const planExecutionService = new PlanExecutionService(registry, dispatcher);
 
   // 2. Stream, Bridge, & Client Monitoring Service
   const stream = new LiveEventStream();
@@ -278,6 +280,7 @@ async function runIntegrationTest() {
     requirementService,
     projectIntakeService,
     planningService,
+    planExecutionService,
     bossAgentId: boss.id,
     taskProvider: {
       getTask: (id: string) => taskMap.get(id) ?? null,
@@ -405,7 +408,47 @@ async function runIntegrationTest() {
       console.log("STEP 6c: Duplicate plan submission rejected with 409 Conflict");
     }
 
-    // ── STEP 7: Read Endpoints GET /agents & GET /tasks ──────────────────────
+    // ── STEP 7: POST /projects/:projectId/execute-plan (Governed Plan Execution Command)
+    {
+      // Valid plan execution by Client Alpha
+      const res = await httpPost(port, `/projects/${newProjectId}/execute-plan`, authHeadersAlpha);
+      assert(res.statusCode === 201, `POST /projects/:projectId/execute-plan should return 201 Created (got ${res.statusCode}: ${res.body})`);
+      const json = res.json<ApiResponseSuccess<any>>();
+      assert(json.success === true, "Response success must be true");
+      assert(json.data.projectId === newProjectId, "ProjectId must match target project");
+      assert(json.data.planId === planId, "PlanId must match created plan");
+      assert(Array.isArray(json.data.tasks), "Tasks must be an array");
+      assert(json.data.tasks.length > 0, "Materialized tasks array must not be empty");
+
+      // Verify task invariants: queued, unassigned, unexecuted
+      for (const t of json.data.tasks) {
+        assert(t.status === "queued", `Task status must be 'queued' (got ${t.status})`);
+        assert(t.assignedTo === null, `Task assignedTo must be null (got ${t.assignedTo})`);
+        assert(t.spent === 0, `Task spent must be 0 (got ${t.spent})`);
+        assert(t.createdBy === boss.id, "Task createdBy must be authoritative Boss ID");
+      }
+      assert(worker.status === "idle", "Worker agent must remain idle (no tasks assigned/started)");
+      console.log("STEP 7a: POST /projects/:projectId/execute-plan succeeded: 201 Created (tasks queued & unassigned)");
+
+      // Unauthorized request by Client Beta
+      const betaExec = await httpPost(port, `/projects/${newProjectId}/execute-plan`, authHeadersBeta);
+      assert(betaExec.statusCode === 403, "Client Beta execute-plan attempt must receive 403 Forbidden");
+      console.log("STEP 7b: Client Beta execute-plan attempt rejected with 403 Forbidden");
+
+      // Unauthenticated request
+      const unauthExec = await httpPost(port, `/projects/${newProjectId}/execute-plan`, {});
+      assert(unauthExec.statusCode === 401, "Unauthenticated execute-plan attempt must receive 401 Unauthorized");
+      console.log("STEP 7c: Unauthenticated execute-plan attempt rejected with 401 Unauthorized");
+
+      // Duplicate plan execution attempt -> 409 Conflict
+      const dupeExec = await httpPost(port, `/projects/${newProjectId}/execute-plan`, authHeadersAlpha);
+      assert(dupeExec.statusCode === 409, "Duplicate plan execution must return 409 Conflict");
+      const dupeJson = dupeExec.json<ApiResponseError>();
+      assert(dupeJson.error.code === "PLAN_ALREADY_EXECUTED", "Error code must be PLAN_ALREADY_EXECUTED");
+      console.log("STEP 7d: Duplicate plan execution attempt rejected with 409 Conflict");
+    }
+
+    // ── STEP 8: Read Endpoints GET /agents & GET /tasks ──────────────────────
     {
       const resAgents = await httpGet(port, "/agents", authHeadersAlpha);
       assert(resAgents.statusCode === 200, "GET /agents should return 200");
@@ -414,14 +457,14 @@ async function runIntegrationTest() {
 
       const resTask = await httpGet(port, `/tasks/${taskId}`, authHeadersAlpha);
       assert(resTask.statusCode === 200, "GET /tasks/:taskId should return 200");
-      console.log("STEP 7: GET /agents and GET /tasks/:taskId verified");
+      console.log("STEP 8: GET /agents and GET /tasks/:taskId verified");
     }
 
-    // ── STEP 8: Unauthorized & Unauthenticated Rejections ─────────────────────
+    // ── STEP 9: Unauthorized & Unauthenticated Rejections ─────────────────────
     {
       const resUnauth = await httpPost(port, "/projects", {}, { input: "Build feature" });
       assert(resUnauth.statusCode === 401, "Unauthenticated POST /projects must return 401 Unauthorized");
-      console.log("STEP 8: Unauthenticated POST /projects rejected with 401 Unauthorized");
+      console.log("STEP 9: Unauthenticated POST /projects rejected with 401 Unauthorized");
     }
 
     console.log(`

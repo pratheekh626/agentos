@@ -8,6 +8,8 @@ import { ClientMonitoringService } from "../../events/ClientMonitoring";
 import { RequirementUnderstandingService } from "../../agents/RequirementUnderstanding";
 import { ProjectIntakeService } from "../../agents/ProjectIntake";
 import { BossPlanningService } from "../../agents/BossPlanning";
+import { TaskDispatcher } from "../../orchestration/TaskDispatcher";
+import { PlanExecutionService } from "../../orchestration/PlanExecution";
 import {
   ApiGatewayServer,
   HeaderDevAuthenticator,
@@ -118,6 +120,8 @@ const monitoring = new ClientMonitoringService(stream);
 const requirementService = new RequirementUnderstandingService();
 const projectIntakeService = new ProjectIntakeService(registry);
 const planningService = new BossPlanningService(registry);
+const taskDispatcher = new TaskDispatcher(registry);
+const planExecutionService = new PlanExecutionService(registry, taskDispatcher);
 
 monitoring.registerProjectTask("proj-1", "task-1");
 
@@ -153,6 +157,7 @@ const services: ApiServicesContainer = {
   requirementService,
   projectIntakeService,
   planningService,
+  planExecutionService,
   bossAgentId: boss.id,
   taskProvider: {
     getTask: (id) => sampleTaskMap.get(id) ?? null,
@@ -471,6 +476,107 @@ async function runTests() {
     assert(json.error.code === "PLAN_EXISTS", "Error code should be PLAN_EXISTS");
   }
   console.log("TEST 26 passed: POST /projects/:projectId/plan duplicate plan ID -> 409 Conflict");
+
+  // ── TEST 27: POST /projects/:projectId/execute-plan unauthenticated -> 401 ────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/execute-plan", {});
+    assert(res.statusCode === 401, "Unauthenticated execute-plan request should return 401");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "UNAUTHENTICATED", "Error code should be UNAUTHENTICATED");
+  }
+  console.log("TEST 27 passed: POST /projects/:projectId/execute-plan unauthenticated -> 401");
+
+  // ── TEST 28: POST /projects/:projectId/execute-plan unauthorized client -> 403 ──
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/execute-plan", authHeadersB);
+    assert(res.statusCode === 403, "Unauthorized client execute-plan request should return 403");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "FORBIDDEN", "Error code should be FORBIDDEN");
+  }
+  console.log("TEST 28 passed: POST /projects/:projectId/execute-plan unauthorized client -> 403");
+
+  // ── TEST 29: POST /projects/:projectId/execute-plan unknown project -> 404 ───
+  {
+    const authHeadersMissing = {
+      "x-client-id": "client-a",
+      "x-authorized-projects": "nonexistent-proj",
+    };
+    const res = await request(server, "POST", "/projects/nonexistent-proj/execute-plan", authHeadersMissing);
+    assert(res.statusCode === 404, "Non-existent project execute-plan request should return 404");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "NOT_FOUND", "Error code should be NOT_FOUND");
+  }
+  console.log("TEST 29 passed: POST /projects/:projectId/execute-plan unknown project -> 404");
+
+  // ── TEST 30: POST /projects/:projectId/execute-plan project without plan -> 404 ──
+  {
+    // Create a project with no execution plan
+    const postPayload = {
+      projectId: "proj-no-plan",
+      input: "Objective: No plan project\nRequirements:\n- Test requirement\nConstraints:\n- None\nDeliverables:\n- None\nAcceptance Criteria:\n- None",
+    };
+    await request(server, "POST", "/projects", authHeadersA, postPayload);
+
+    const res = await request(server, "POST", "/projects/proj-no-plan/execute-plan", authHeadersA);
+    assert(res.statusCode === 404, "Project without execution plan should return 404");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "NOT_FOUND", "Error code should be NOT_FOUND");
+  }
+  console.log("TEST 30 passed: POST /projects/:projectId/execute-plan project without plan -> 404");
+
+  // ── TEST 31: POST /projects/:projectId/execute-plan valid authorized execution -> 201 ──
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/execute-plan", authHeadersA);
+    assert(res.statusCode === 201, `Valid execute-plan request should return 201 Created (got ${res.statusCode}: ${res.body})`);
+    const json = res.json<ApiResponseSuccess<any>>();
+    assert(json.success === true, "Response success must be true");
+    assert(json.data.projectId === "proj-post-alpha", "ProjectId must match target project");
+    assert(json.data.planId === "plan-alpha-1", "PlanId must match created plan");
+    assert(Array.isArray(json.data.tasks), "Tasks must be an array");
+    assert(json.data.tasks.length > 0, "Materialized tasks array must not be empty");
+
+    for (const t of json.data.tasks) {
+      assert(t.status === "queued", `Task status must be 'queued' (got ${t.status})`);
+      assert(t.assignedTo === null, `Task assignedTo must be null (got ${t.assignedTo})`);
+      assert(t.spent === 0, `Task spent credits must be 0 (got ${t.spent})`);
+      assert(t.createdBy === boss.id, "Task createdBy must be authoritative Boss ID");
+      assert(!("internalGatewayToken" in t), "Internal gateway tokens must be stripped");
+    }
+  }
+  console.log("TEST 31 passed: POST /projects/:projectId/execute-plan valid authorized execution -> 201 Created & safe DTOs (queued & unassigned)");
+
+  // ── TEST 32: Arbitrary task injection & bossId override strictly ignored ──
+  {
+    // Create a new project & plan for override test
+    await request(server, "POST", "/projects", authHeadersA, {
+      projectId: "proj-tamper",
+      input: "Objective: Tamper test\nRequirements:\n- Req 1\nConstraints:\n- None\nDeliverables:\n- Deliv 1\nAcceptance Criteria:\n- None",
+    });
+    await request(server, "POST", "/projects/proj-tamper/plan", authHeadersA, { planId: "plan-tamper" });
+
+    // Attempt to inject arbitrary fake tasks and fake bossId in execute-plan payload
+    const tamperPayload = {
+      bossId: "fake-boss-id-override",
+      tasks: [{ id: "fake-injected-task", title: "Malicious Task", status: "completed" }],
+    };
+
+    const res = await request(server, "POST", "/projects/proj-tamper/execute-plan", authHeadersA, tamperPayload);
+    assert(res.statusCode === 201, "Execute-plan with extra payload should ignore injected tasks/bossId and return 201");
+    const json = res.json<ApiResponseSuccess<any>>();
+    assert(json.data.tasks.every((t: any) => t.status === "queued" && t.assignedTo === null), "All tasks must remain queued & unassigned");
+    assert(json.data.tasks.every((t: any) => t.createdBy === boss.id), "createdBy must remain authoritative Boss ID, NOT spoofed");
+    assert(!json.data.tasks.some((t: any) => t.id === "fake-injected-task"), "Injected arbitrary task must NOT exist");
+  }
+  console.log("TEST 32 passed: Arbitrary task injection & bossId override strictly ignored");
+
+  // ── TEST 33: Duplicate plan execution returns 409 Conflict ───────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/execute-plan", authHeadersA);
+    assert(res.statusCode === 409, "Duplicate plan execution should return 409 Conflict");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "PLAN_ALREADY_EXECUTED", "Error code should be PLAN_ALREADY_EXECUTED");
+  }
+  console.log("TEST 33 passed: Duplicate plan execution returns 409 Conflict");
 
   console.log("\n✅ All ApiGatewayServer unit tests passed.");
 }

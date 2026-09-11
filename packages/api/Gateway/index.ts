@@ -10,6 +10,7 @@ import type {
 import type { RequirementUnderstandingService } from "../../agents/RequirementUnderstanding";
 import type { ProjectIntakeService, Project } from "../../agents/ProjectIntake";
 import type { BossPlanningService, ExecutionPlan } from "../../agents/BossPlanning";
+import type { PlanExecutionService } from "../../orchestration/PlanExecution";
 
 // ── Authentication Boundary ──────────────────────────────────────────────────
 
@@ -208,6 +209,7 @@ export interface ApiServicesContainer {
   requirementService?: RequirementUnderstandingService;
   projectIntakeService?: ProjectIntakeService;
   planningService?: BossPlanningService;
+  planExecutionService?: PlanExecutionService;
   bossAgentId?: string;
   taskProvider?: TaskProvider;
   projectProvider?: ProjectProvider;
@@ -378,6 +380,91 @@ export class ApiGatewayServer {
         }
 
         throw new ApiError(400, "PLANNING_REJECTED", planningResult.reason || "Planning request rejected");
+      }
+
+      // Route: POST /projects/:projectId/execute-plan (Governed Plan Execution Command)
+      if (method === "POST" && parts[0] === "projects" && parts.length === 3 && parts[2] === "execute-plan") {
+        const projectId = parts[1];
+        if (!projectId) {
+          throw new ApiError(400, "BAD_REQUEST", "Project ID is required");
+        }
+
+        const authContext = this.authenticator.authenticate(req);
+        if (!authContext.isAuthenticated || !authContext.clientId) {
+          throw new ApiError(401, "UNAUTHENTICATED", "Authentication required. Missing or invalid authentication credentials.");
+        }
+
+        const clientAuth: ClientAuthContext = {
+          clientId: authContext.clientId,
+          authorizedProjectIds: authContext.authorizedProjectIds,
+        };
+
+        // Check authorization via ClientMonitoringService
+        const summary = this.services.monitoringService.getProjectSummary(clientAuth, projectId);
+        if (!summary && !clientAuth.authorizedProjectIds.includes(projectId)) {
+          throw new ApiError(403, "FORBIDDEN", `Access denied for project: ${projectId}`);
+        }
+
+        // Retrieve project
+        const project = (this.services.projectIntakeService?.get(projectId)
+          ?? this.services.projectProvider?.getProject(projectId)) as any;
+
+        if (!project) {
+          throw new ApiError(404, "NOT_FOUND", `Project not found: ${projectId}`);
+        }
+
+        if (!this.services.planningService) {
+          throw new ApiError(500, "SERVICE_UNAVAILABLE", "BossPlanningService is not configured");
+        }
+
+        if (!this.services.planExecutionService) {
+          throw new ApiError(500, "SERVICE_UNAVAILABLE", "PlanExecutionService is not configured");
+        }
+
+        // Retrieve ExecutionPlan for target project
+        const body = await readJsonBody(req);
+        let plan: ExecutionPlan | undefined;
+
+        if (body.planId && typeof body.planId === "string") {
+          plan = this.services.planningService.get(body.planId.trim());
+          if (plan && plan.projectId !== projectId) {
+            plan = undefined;
+          }
+        }
+
+        if (!plan) {
+          plan = this.services.planningService.getAll().find((p) => p.projectId === projectId);
+        }
+
+        if (!plan) {
+          throw new ApiError(404, "NOT_FOUND", `Execution plan not found for project: ${projectId}`);
+        }
+
+        // Execute plan via PlanExecutionService
+        const result = this.services.planExecutionService.execute(plan);
+
+        if (result.decision === "REJECTED") {
+          if (result.reason.includes("Plan already executed")) {
+            throw new ApiError(409, "PLAN_ALREADY_EXECUTED", result.reason);
+          }
+          throw new ApiError(400, "PLAN_EXECUTION_REJECTED", result.reason);
+        }
+
+        // Register materialized tasks in ClientMonitoringService
+        for (const task of result.tasks) {
+          this.services.monitoringService.registerProjectTask(projectId, task.id);
+        }
+
+        return sendJson(201, {
+          success: true,
+          data: {
+            projectId: project.id,
+            planId: plan.id,
+            tasks: result.tasks.map(toSafeTask),
+            createdAt: timestamp,
+          },
+          timestamp,
+        });
       }
 
       // Route: POST /projects (Governed Client Project Intake)
