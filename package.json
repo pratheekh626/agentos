@@ -12,6 +12,7 @@
     "test:project-execution": "tsx packages/orchestration/ProjectExecution/test.ts",
     "test:project-worker-execution": "tsx packages/orchestration/ProjectWorkerExecution/test.ts",
     "test:project-verification": "tsx packages/orchestration/ProjectVerification/test.ts",
+    "test:project-qa": "tsx packages/orchestration/ProjectQA/test.ts",
     "test:requirements": "tsx packages/agents/RequirementUnderstanding/test.ts",
     "test:tasks": "tsx packages/orchestration/TaskDispatcher/test.ts",
     "test:dependencies": "tsx packages/orchestration/Dependencies/test.ts",
