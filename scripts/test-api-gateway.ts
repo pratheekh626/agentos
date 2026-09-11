@@ -281,6 +281,9 @@ async function runIntegrationTest() {
     projectIntakeService,
     planningService,
     planExecutionService,
+    managerAllocationService: allocationSvc,
+    organizationService: organization,
+    conferenceRoomService: conference,
     bossAgentId: boss.id,
     taskProvider: {
       getTask: (id: string) => taskMap.get(id) ?? null,
@@ -448,7 +451,68 @@ async function runIntegrationTest() {
       console.log("STEP 7d: Duplicate plan execution attempt rejected with 409 Conflict");
     }
 
-    // ── STEP 8: Read Endpoints GET /agents & GET /tasks ──────────────────────
+    // ── STEP 8: POST /projects/:projectId/allocate-manager (Governed Manager Allocation Command)
+    {
+      organization.addManager(manager.id, "frontend");
+      const e2eMeeting = conference.createMeeting({
+        id: `meeting-e2e-${Date.now()}`,
+        projectId: newProjectId,
+        calledBy: boss.id,
+        participants: [manager.id],
+        agenda: "Allocate manager for newProjectId",
+      });
+      conference.startMeeting(e2eMeeting.id);
+
+      const newProjTasks = planExecutionService.get(planId) || [];
+      assert(newProjTasks.length > 0, "Materialized tasks for newProjectId must exist");
+      const targetTaskId = newProjTasks[0].id;
+
+      const e2eDecision = conference.createDecision({
+        id: `decision-e2e-${Date.now()}`,
+        meetingId: e2eMeeting.id,
+        decidedBy: boss.id,
+        decisionType: "ASSIGN_MANAGER",
+        summary: "Assign manager-api-e2e to tasks",
+        taskIds: [targetTaskId],
+        managerId: manager.id,
+      });
+
+      const allocPayload = {
+        allocationId: `alloc-e2e-${Date.now()}`,
+        meetingId: e2eMeeting.id,
+        decisionId: e2eDecision.id,
+        managerId: manager.id,
+        taskIds: [targetTaskId],
+      };
+
+      const res = await httpPost(port, `/projects/${newProjectId}/allocate-manager`, authHeadersAlpha, allocPayload);
+      assert(res.statusCode === 201, `POST /projects/:projectId/allocate-manager should return 201 Created (got ${res.statusCode}: ${res.body})`);
+      const json = res.json<ApiResponseSuccess<any>>();
+      assert(json.success === true, "Response success must be true");
+      assert(json.data.allocationId === allocPayload.allocationId, "Allocation ID must match");
+      assert(json.data.projectId === newProjectId, "ProjectId must match target project");
+      assert(json.data.managerId === manager.id, "ManagerId must match");
+      assert(json.data.status === "PROPOSED", "Allocation status MUST be 'PROPOSED'");
+      assert(json.data.assignedBy === boss.id, "AssignedBy must be authoritative Boss ID");
+
+      assert(worker.status === "idle", "Worker agent must remain idle (no workers assigned/executed)");
+      console.log("STEP 8a: POST /projects/:projectId/allocate-manager succeeded: 201 Created (status remains PROPOSED)");
+
+      const betaAlloc = await httpPost(port, `/projects/${newProjectId}/allocate-manager`, authHeadersBeta, {
+        ...allocPayload,
+        allocationId: `alloc-beta-fail`,
+      });
+      assert(betaAlloc.statusCode === 403, "Client Beta allocate-manager attempt must receive 403 Forbidden");
+      console.log("STEP 8b: Client Beta allocate-manager attempt rejected with 403 Forbidden");
+
+      const dupeAlloc = await httpPost(port, `/projects/${newProjectId}/allocate-manager`, authHeadersAlpha, allocPayload);
+      assert(dupeAlloc.statusCode === 409, "Duplicate allocation must return 409 Conflict");
+      const dupeJson = dupeAlloc.json<ApiResponseError>();
+      assert(dupeJson.error.code === "ALLOCATION_EXISTS", "Error code must be ALLOCATION_EXISTS");
+      console.log("STEP 8c: Duplicate allocation attempt rejected with 409 Conflict");
+    }
+
+    // ── STEP 9: Read Endpoints GET /agents & GET /tasks ──────────────────────
     {
       const resAgents = await httpGet(port, "/agents", authHeadersAlpha);
       assert(resAgents.statusCode === 200, "GET /agents should return 200");
@@ -457,14 +521,14 @@ async function runIntegrationTest() {
 
       const resTask = await httpGet(port, `/tasks/${taskId}`, authHeadersAlpha);
       assert(resTask.statusCode === 200, "GET /tasks/:taskId should return 200");
-      console.log("STEP 8: GET /agents and GET /tasks/:taskId verified");
+      console.log("STEP 9: GET /agents and GET /tasks/:taskId verified");
     }
 
-    // ── STEP 9: Unauthorized & Unauthenticated Rejections ─────────────────────
+    // ── STEP 10: Unauthorized & Unauthenticated Rejections ────────────────────
     {
       const resUnauth = await httpPost(port, "/projects", {}, { input: "Build feature" });
       assert(resUnauth.statusCode === 401, "Unauthenticated POST /projects must return 401 Unauthorized");
-      console.log("STEP 9: Unauthenticated POST /projects rejected with 401 Unauthorized");
+      console.log("STEP 10: Unauthenticated POST /projects rejected with 401 Unauthorized");
     }
 
     console.log(`

@@ -11,6 +11,9 @@ import type { RequirementUnderstandingService } from "../../agents/RequirementUn
 import type { ProjectIntakeService, Project } from "../../agents/ProjectIntake";
 import type { BossPlanningService, ExecutionPlan } from "../../agents/BossPlanning";
 import type { PlanExecutionService } from "../../orchestration/PlanExecution";
+import type { ManagerAllocationService, ManagerAllocation } from "../../orchestration/ManagerAllocation";
+import type { OrganizationService } from "../../agents/Organization";
+import type { ConferenceRoomService } from "../../agents/ConferenceRoom";
 
 // ── Authentication Boundary ──────────────────────────────────────────────────
 
@@ -192,6 +195,36 @@ export function toSafeExecutionPlan(plan: ExecutionPlan): SafeExecutionPlanDto {
   };
 }
 
+export interface SafeManagerAllocationDto {
+  allocationId: string;
+  projectId: string;
+  organizationId: string;
+  meetingId: string;
+  decisionId: string;
+  managerId: string;
+  taskIds: string[];
+  decomposeTaskIds: string[];
+  assignedBy: string;
+  status: string;
+  createdAt: string;
+}
+
+export function toSafeAllocation(allocation: ManagerAllocation): SafeManagerAllocationDto {
+  return {
+    allocationId: allocation.id,
+    projectId: allocation.projectId,
+    organizationId: allocation.organizationId,
+    meetingId: allocation.meetingId,
+    decisionId: allocation.decisionId,
+    managerId: allocation.managerId,
+    taskIds: [...allocation.taskIds],
+    decomposeTaskIds: [...(allocation.decomposeTaskIds ?? [])],
+    assignedBy: allocation.assignedBy,
+    status: allocation.status,
+    createdAt: allocation.createdAt,
+  };
+}
+
 // ── Service Container & Read Adapters ────────────────────────────────────────
 
 export interface TaskProvider {
@@ -210,6 +243,9 @@ export interface ApiServicesContainer {
   projectIntakeService?: ProjectIntakeService;
   planningService?: BossPlanningService;
   planExecutionService?: PlanExecutionService;
+  managerAllocationService?: ManagerAllocationService;
+  organizationService?: OrganizationService;
+  conferenceRoomService?: ConferenceRoomService;
   bossAgentId?: string;
   taskProvider?: TaskProvider;
   projectProvider?: ProjectProvider;
@@ -465,6 +501,148 @@ export class ApiGatewayServer {
           },
           timestamp,
         });
+      }
+
+      // Route: POST /projects/:projectId/allocate-manager (Governed Manager Allocation Command)
+      if (method === "POST" && parts[0] === "projects" && parts.length === 3 && parts[2] === "allocate-manager") {
+        const projectId = parts[1];
+        if (!projectId) {
+          throw new ApiError(400, "BAD_REQUEST", "Project ID is required");
+        }
+
+        const authContext = this.authenticator.authenticate(req);
+        if (!authContext.isAuthenticated || !authContext.clientId) {
+          throw new ApiError(401, "UNAUTHENTICATED", "Authentication required. Missing or invalid authentication credentials.");
+        }
+
+        const clientAuth: ClientAuthContext = {
+          clientId: authContext.clientId,
+          authorizedProjectIds: authContext.authorizedProjectIds,
+        };
+
+        // Check authorization via ClientMonitoringService
+        const summary = this.services.monitoringService.getProjectSummary(clientAuth, projectId);
+        if (!summary && !clientAuth.authorizedProjectIds.includes(projectId)) {
+          throw new ApiError(403, "FORBIDDEN", `Access denied for project: ${projectId}`);
+        }
+
+        // Retrieve project
+        const project = (this.services.projectIntakeService?.get(projectId)
+          ?? this.services.projectProvider?.getProject(projectId)) as any;
+
+        if (!project) {
+          throw new ApiError(404, "NOT_FOUND", `Project not found: ${projectId}`);
+        }
+
+        // Retrieve ExecutionPlan for this project
+        if (!this.services.planningService) {
+          throw new ApiError(500, "SERVICE_UNAVAILABLE", "BossPlanningService is not configured");
+        }
+        const plan = this.services.planningService.getAll().find((p) => p.projectId === projectId);
+        if (!plan) {
+          throw new ApiError(404, "NOT_FOUND", `Execution plan not found for project: ${projectId}`);
+        }
+
+        if (!this.services.managerAllocationService) {
+          throw new ApiError(500, "SERVICE_UNAVAILABLE", "ManagerAllocationService is not configured");
+        }
+
+        const bossId = this.services.bossAgentId ?? this.services.registry.getByRole("boss")[0]?.id;
+        if (!bossId) {
+          throw new ApiError(500, "SERVICE_UNAVAILABLE", "No registered Boss agent available for allocation");
+        }
+
+        const body = await readJsonBody(req);
+        const managerId = body.managerId ? String(body.managerId).trim() : "";
+        if (!managerId) {
+          throw new ApiError(400, "BAD_REQUEST", "Manager ID is required");
+        }
+
+        const managerAgent = this.services.registry.get(managerId);
+        if (!managerAgent) {
+          throw new ApiError(400, "BAD_REQUEST", `Manager agent not found: ${managerId}`);
+        }
+
+        if (managerAgent.role !== "manager") {
+          throw new ApiError(400, "BAD_REQUEST", `Agent '${managerId}' is a ${managerAgent.role}, not a manager`);
+        }
+
+        if (managerAgent.managerId !== bossId) {
+          throw new ApiError(400, "BAD_REQUEST", `Manager '${managerId}' is outside Boss hierarchy`);
+        }
+
+        const rawTaskIds = Array.isArray(body.taskIds) ? body.taskIds : [];
+        if (!rawTaskIds.length) {
+          throw new ApiError(400, "BAD_REQUEST", "Task IDs array is required and cannot be empty");
+        }
+
+        // Gather project runtime tasks
+        const projectTasks: Task[] = [];
+        if (this.services.taskProvider && this.services.taskProvider.getTasksForProject) {
+          projectTasks.push(...this.services.taskProvider.getTasksForProject(projectId));
+        }
+        if (this.services.planExecutionService) {
+          const executedTasks = this.services.planExecutionService.get(plan.id);
+          if (executedTasks) {
+            for (const t of executedTasks) {
+              if (!projectTasks.some((pt) => pt.id === t.id)) {
+                projectTasks.push(t);
+              }
+            }
+          }
+        }
+
+        const projectTaskIdSet = new Set(projectTasks.map((t) => t.id));
+
+        // Validate every requested taskId belongs to target project
+        for (const tid of rawTaskIds) {
+          const tidStr = String(tid).trim();
+          if (!projectTaskIdSet.has(tidStr)) {
+            throw new ApiError(400, "BAD_REQUEST", `Task ID '${tidStr}' does not belong to project '${projectId}' execution plan`);
+          }
+        }
+
+        const taskMap = new Map<string, Task>(projectTasks.map((t) => [t.id, t]));
+
+        const organizationId = body.organizationId
+          || this.services.organizationService?.getOrganization()?.id
+          || "org-api-1";
+
+        const meetingId = body.meetingId ? String(body.meetingId).trim() : `meeting-${Date.now()}`;
+        const decisionId = body.decisionId ? String(body.decisionId).trim() : `decision-${Date.now()}`;
+        const allocationId = body.allocationId || body.id || `alloc-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
+        const createInput = {
+          id: allocationId,
+          organizationId,
+          meetingId,
+          decisionId,
+          projectId: project.id,
+          managerId,
+          taskIds: rawTaskIds.map((id: any) => String(id).trim()),
+          decomposeTaskIds: Array.isArray(body.decomposeTaskIds) ? body.decomposeTaskIds.map((id: any) => String(id).trim()) : [],
+          assignedBy: bossId, // Authoritative Boss ID, ignoring body overrides
+          createdAt: timestamp,
+        };
+
+        const allocResult = this.services.managerAllocationService.createAllocation(createInput, taskMap);
+
+        if (allocResult.decision === "REJECTED") {
+          if (allocResult.reason.includes("Allocation already exists")) {
+            throw new ApiError(409, "ALLOCATION_EXISTS", allocResult.reason);
+          }
+          throw new ApiError(400, "ALLOCATION_REJECTED", allocResult.reason);
+        }
+
+        if (allocResult.decision === "CREATED" && allocResult.allocation) {
+          return sendJson(201, {
+            success: true,
+            data: toSafeAllocation(allocResult.allocation),
+            timestamp,
+          });
+        }
+
+        throw new ApiError(400, "ALLOCATION_REJECTED", allocResult.reason || "Manager allocation failed");
       }
 
       // Route: POST /projects (Governed Client Project Intake)

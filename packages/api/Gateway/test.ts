@@ -2,6 +2,7 @@ import { IncomingMessage, ServerResponse } from "node:http";
 import { EventEmitter } from "node:events";
 import { AgentRegistry } from "../../agents/AgentRegistry";
 import { createBoss } from "../../agents/Boss";
+import { createManager } from "../../agents/Managers";
 import { createWorker } from "../../agents/Workers";
 import { LiveEventStream } from "../../events/LiveEventStream";
 import { ClientMonitoringService } from "../../events/ClientMonitoring";
@@ -10,6 +11,10 @@ import { ProjectIntakeService } from "../../agents/ProjectIntake";
 import { BossPlanningService } from "../../agents/BossPlanning";
 import { TaskDispatcher } from "../../orchestration/TaskDispatcher";
 import { PlanExecutionService } from "../../orchestration/PlanExecution";
+import { OrganizationService } from "../../agents/Organization";
+import { ConferenceRoomService } from "../../agents/ConferenceRoom";
+import { ManagerAllocationService } from "../../orchestration/ManagerAllocation";
+import { AgentMessageService } from "../../messaging/AgentMessages";
 import {
   ApiGatewayServer,
   HeaderDevAuthenticator,
@@ -107,13 +112,24 @@ console.log("Running ApiGatewayServer Unit Tests...\n");
 
 const registry = new AgentRegistry();
 const boss = createBoss("boss-api", "Boss Agent");
-
-const worker = createWorker("worker-api", "Worker Agent", boss.id);
+const manager = createManager("manager-api", "Engineering Manager", boss.id);
+const worker = createWorker("worker-api", "Worker Agent", manager.id);
 (worker as any).identityFingerprint = "SECRET_FINGERPRINT";
 (worker as any).riskScore = 99;
 
-registry.register(boss);
-registry.register(worker);
+const otherBoss = createBoss("boss-other-api", "Other Boss");
+const otherManager = createManager("manager-other-api", "Other Manager", otherBoss.id);
+
+for (const a of [boss, manager, worker, otherBoss, otherManager]) {
+  registry.register(a);
+}
+
+const organizationService = new OrganizationService(registry);
+organizationService.createOrganization("org-api-1", "API Test Org", boss.id);
+organizationService.addManager(manager.id, "backend");
+
+const messages = new AgentMessageService();
+const conferenceRoomService = new ConferenceRoomService(registry, messages);
 
 const stream = new LiveEventStream();
 const monitoring = new ClientMonitoringService(stream);
@@ -122,6 +138,13 @@ const projectIntakeService = new ProjectIntakeService(registry);
 const planningService = new BossPlanningService(registry);
 const taskDispatcher = new TaskDispatcher(registry);
 const planExecutionService = new PlanExecutionService(registry, taskDispatcher);
+const managerAllocationService = new ManagerAllocationService(
+  registry,
+  organizationService,
+  conferenceRoomService,
+  null as any,
+  messages
+);
 
 monitoring.registerProjectTask("proj-1", "task-1");
 
@@ -158,6 +181,9 @@ const services: ApiServicesContainer = {
   projectIntakeService,
   planningService,
   planExecutionService,
+  managerAllocationService,
+  organizationService,
+  conferenceRoomService,
   bossAgentId: boss.id,
   taskProvider: {
     getTask: (id) => sampleTaskMap.get(id) ?? null,
@@ -265,7 +291,7 @@ async function runTests() {
     const res = await request(server, "GET", "/agents", authHeadersA);
     assert(res.statusCode === 200, "Agents list should return 200");
     const json = res.json<ApiResponseSuccess<any[]>>();
-    assert(json.data.length === 2, "Should return 2 agents");
+    assert(json.data.length === 5, "Should return 5 agents");
     const workerDto = json.data.find((a) => a.id === "worker-api");
     assert(workerDto !== undefined, "Worker agent must exist");
     assert(!("identityFingerprint" in workerDto), "identityFingerprint MUST be stripped by allowlist");
@@ -577,6 +603,208 @@ async function runTests() {
     assert(json.error.code === "PLAN_ALREADY_EXECUTED", "Error code should be PLAN_ALREADY_EXECUTED");
   }
   console.log("TEST 33 passed: Duplicate plan execution returns 409 Conflict");
+
+  // ── Setup meeting & decision for allocation tests ──────────────────────────
+  const allocMeeting = conferenceRoomService.createMeeting({
+    id: "meeting-alpha-1",
+    projectId: "proj-post-alpha",
+    calledBy: boss.id,
+    participants: [manager.id],
+    agenda: "Allocate manager for proj-post-alpha",
+  });
+  conferenceRoomService.startMeeting(allocMeeting.id);
+  const allocDecision = conferenceRoomService.createDecision({
+    id: "decision-alpha-1",
+    meetingId: allocMeeting.id,
+    decidedBy: boss.id,
+    decisionType: "ASSIGN_MANAGER",
+    summary: "Assign manager-api to proj-post-alpha tasks",
+    taskIds: ["plan-alpha-1-requirement-1"],
+    managerId: manager.id,
+  });
+
+  const validAllocPayload = {
+    allocationId: "alloc-alpha-1",
+    meetingId: allocMeeting.id,
+    decisionId: allocDecision.id,
+    managerId: manager.id,
+    taskIds: ["plan-alpha-1-requirement-1"],
+  };
+
+  // ── TEST 34: POST /projects/:projectId/allocate-manager unauthenticated -> 401 ──
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/allocate-manager", {}, validAllocPayload);
+    assert(res.statusCode === 401, "Unauthenticated allocate-manager should return 401");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "UNAUTHENTICATED", "Error code should be UNAUTHENTICATED");
+  }
+  console.log("TEST 34 passed: POST /projects/:projectId/allocate-manager unauthenticated -> 401");
+
+  // ── TEST 35: Client B attempting to allocate manager for Client A project -> 403 ──
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/allocate-manager", authHeadersB, validAllocPayload);
+    assert(res.statusCode === 403, "Unauthorized client allocate-manager should return 403");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "FORBIDDEN", "Error code should be FORBIDDEN");
+  }
+  console.log("TEST 35 passed: Client B attempting to allocate manager for Client A project -> 403");
+
+  // ── TEST 36: Unknown project -> 404 ─────────────────────────────────────────
+  {
+    const authHeadersMissing = {
+      "x-client-id": "client-a",
+      "x-authorized-projects": "nonexistent-proj",
+    };
+    const res = await request(server, "POST", "/projects/nonexistent-proj/allocate-manager", authHeadersMissing, validAllocPayload);
+    assert(res.statusCode === 404, "Unknown project allocate-manager should return 404");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "NOT_FOUND", "Error code should be NOT_FOUND");
+  }
+  console.log("TEST 36 passed: Unknown project -> 404");
+
+  // ── TEST 37: Project without execution plan -> 404 ──────────────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-no-plan/allocate-manager", authHeadersA, validAllocPayload);
+    assert(res.statusCode === 404, "Project without execution plan should return 404");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "NOT_FOUND", "Error code should be NOT_FOUND");
+  }
+  console.log("TEST 37 passed: Project without execution plan -> 404");
+
+  // ── TEST 38: Malformed/empty request -> 400 ─────────────────────────────────
+  {
+    const res1 = await request(server, "POST", "/projects/proj-post-alpha/allocate-manager", authHeadersA, {});
+    assert(res1.statusCode === 400, "Empty payload allocate-manager should return 400");
+
+    const res2 = await request(server, "POST", "/projects/proj-post-alpha/allocate-manager", authHeadersA, { managerId: manager.id, taskIds: [] });
+    assert(res2.statusCode === 400, "Empty taskIds array allocate-manager should return 400");
+  }
+  console.log("TEST 38 passed: Malformed/empty request -> 400");
+
+  // ── TEST 39: Unknown manager -> 400 ─────────────────────────────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/allocate-manager", authHeadersA, {
+      ...validAllocPayload,
+      managerId: "nonexistent-manager-id",
+    });
+    assert(res.statusCode === 400, "Unknown manager allocate-manager should return 400");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "BAD_REQUEST", "Error code should be BAD_REQUEST");
+  }
+  console.log("TEST 39 passed: Unknown manager -> 400");
+
+  // ── TEST 40: Worker supplied as manager -> 400 ──────────────────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/allocate-manager", authHeadersA, {
+      ...validAllocPayload,
+      managerId: worker.id,
+    });
+    assert(res.statusCode === 400, "Worker supplied as manager should return 400");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "BAD_REQUEST", "Error code should be BAD_REQUEST");
+  }
+  console.log("TEST 40 passed: Worker supplied as manager -> 400");
+
+  // ── TEST 41: Boss supplied as manager -> 400 ────────────────────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/allocate-manager", authHeadersA, {
+      ...validAllocPayload,
+      managerId: boss.id,
+    });
+    assert(res.statusCode === 400, "Boss supplied as manager should return 400");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "BAD_REQUEST", "Error code should be BAD_REQUEST");
+  }
+  console.log("TEST 41 passed: Boss supplied as manager -> 400");
+
+  // ── TEST 42: Manager from wrong hierarchy -> 400 ───────────────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/allocate-manager", authHeadersA, {
+      ...validAllocPayload,
+      managerId: otherManager.id,
+    });
+    assert(res.statusCode === 400, "Manager from wrong hierarchy should return 400");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "BAD_REQUEST", "Error code should be BAD_REQUEST");
+  }
+  console.log("TEST 42 passed: Manager from wrong hierarchy -> 400");
+
+  // ── TEST 43: Unknown task ID -> 400 ─────────────────────────────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/allocate-manager", authHeadersA, {
+      ...validAllocPayload,
+      taskIds: ["nonexistent-task-id"],
+    });
+    assert(res.statusCode === 400, "Unknown task ID should return 400");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "BAD_REQUEST", "Error code should be BAD_REQUEST");
+  }
+  console.log("TEST 43 passed: Unknown task ID -> 400");
+
+  // ── TEST 44: Task from another project -> 400 ───────────────────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/allocate-manager", authHeadersA, {
+      ...validAllocPayload,
+      taskIds: ["task-1"], // belongs to proj-1, not proj-post-alpha
+    });
+    assert(res.statusCode === 400, "Task from another project should return 400");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "BAD_REQUEST", "Error code should be BAD_REQUEST");
+  }
+  console.log("TEST 44 passed: Task from another project -> 400");
+
+  // ── TEST 45-52: Valid manager allocation & lifecycle boundary assertions ───
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/allocate-manager", authHeadersA, validAllocPayload);
+    assert(res.statusCode === 201, `Valid allocate-manager should return 201 Created (got ${res.statusCode}: ${res.body})`);
+    const json = res.json<ApiResponseSuccess<any>>();
+    assert(json.success === true, "Response success must be true");
+
+    const alloc = json.data;
+    assert(alloc.allocationId === "alloc-alpha-1", "Allocation ID must match");
+    assert(alloc.projectId === "proj-post-alpha", "ProjectId must match target project");
+    assert(alloc.managerId === manager.id, "ManagerId must match");
+    assert(alloc.status === "PROPOSED", "Allocation status MUST be 'PROPOSED'"); // TEST 46, 48, 49
+    assert(alloc.assignedBy === boss.id, "AssignedBy must be authoritative Boss ID");
+    assert(!("internalToken" in alloc), "Internal fields must be stripped"); // TEST 47
+
+    // Assert worker & task state remain strictly unchanged (TEST 50, 51, 52)
+    assert(worker.status === "idle", "Worker agent must remain idle");
+    const getTaskRes = await request(server, "GET", "/tasks/plan-alpha-1-requirement-1", authHeadersA);
+    if (getTaskRes.statusCode === 200) {
+      const taskJson = getTaskRes.json<ApiResponseSuccess<any>>();
+      assert(taskJson.data.assignedTo === null, "Task must remain unassigned");
+      assert(taskJson.data.status === "queued", "Task must remain queued");
+    }
+  }
+  console.log("TEST 45-52 passed: Valid manager allocation -> 201 Created & status remains PROPOSED (unassigned & unexecuted)");
+
+  // ── TEST 53 & 54: Body spoofing (clientId / assignedBy) strictly ignored ─────
+  {
+    const spoofPayload = {
+      allocationId: "alloc-spoof-1",
+      meetingId: allocMeeting.id,
+      decisionId: allocDecision.id,
+      managerId: manager.id,
+      taskIds: ["plan-alpha-1-requirement-1"],
+      clientId: "spoofed-client-id",
+      assignedBy: "fake-boss-id-override",
+    };
+    const res = await request(server, "POST", "/projects/proj-post-alpha/allocate-manager", authHeadersA, spoofPayload);
+    assert(res.statusCode === 201, "Spoofed allocation request should succeed with authoritative values");
+    const json = res.json<ApiResponseSuccess<any>>();
+    assert(json.data.assignedBy === boss.id, "assignedBy MUST remain authoritative Boss ID, NOT spoofed");
+  }
+  console.log("TEST 53-54 passed: Body spoofing (clientId / assignedBy) strictly ignored");
+
+  // ── TEST 55: Duplicate allocation -> 409 Conflict ───────────────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/allocate-manager", authHeadersA, validAllocPayload);
+    assert(res.statusCode === 409, "Duplicate allocation ID should return 409 Conflict");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "ALLOCATION_EXISTS", "Error code should be ALLOCATION_EXISTS");
+  }
+  console.log("TEST 55 passed: Duplicate allocation -> 409 Conflict");
 
   console.log("\n✅ All ApiGatewayServer unit tests passed.");
 }
