@@ -126,6 +126,7 @@ export class ClientMonitoringService {
     const forbiddenKeys = new Set([
       "riskScore",
       "identityFingerprint",
+      "identityHash",
       "walletBalance",
       "gatewayDecision",
       "anomalyScore",

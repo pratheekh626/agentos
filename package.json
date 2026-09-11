@@ -28,6 +28,8 @@
     "test:live-event-stream-e2e": "tsx scripts/test-live-event-stream.ts",
     "test:client-monitoring": "tsx packages/events/ClientMonitoring/test.ts",
     "test:client-monitoring-e2e": "tsx scripts/test-client-monitoring.ts",
+    "test:api-gateway": "tsx packages/api/Gateway/test.ts",
+    "test:api-gateway-e2e": "tsx scripts/test-api-gateway.ts",
 
 
     "test:requirements": "tsx packages/agents/RequirementUnderstanding/test.ts",
