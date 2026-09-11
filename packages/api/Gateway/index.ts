@@ -645,6 +645,99 @@ export class ApiGatewayServer {
         throw new ApiError(400, "ALLOCATION_REJECTED", allocResult.reason || "Manager allocation failed");
       }
 
+      // Route: POST /projects/:projectId/approve-allocation (Governed Boss Allocation Approval Command)
+      if (method === "POST" && parts[0] === "projects" && parts.length === 3 && parts[2] === "approve-allocation") {
+        const projectId = parts[1];
+        if (!projectId) {
+          throw new ApiError(400, "BAD_REQUEST", "Project ID is required");
+        }
+
+        const authContext = this.authenticator.authenticate(req);
+        if (!authContext.isAuthenticated || !authContext.clientId) {
+          throw new ApiError(401, "UNAUTHENTICATED", "Authentication required. Missing or invalid authentication credentials.");
+        }
+
+        const clientAuth: ClientAuthContext = {
+          clientId: authContext.clientId,
+          authorizedProjectIds: authContext.authorizedProjectIds,
+        };
+
+        // Check authorization via ClientMonitoringService
+        const summary = this.services.monitoringService.getProjectSummary(clientAuth, projectId);
+        if (!summary && !clientAuth.authorizedProjectIds.includes(projectId)) {
+          throw new ApiError(403, "FORBIDDEN", `Access denied for project: ${projectId}`);
+        }
+
+        // Retrieve project
+        const project = (this.services.projectIntakeService?.get(projectId)
+          ?? this.services.projectProvider?.getProject(projectId)) as any;
+
+        if (!project) {
+          throw new ApiError(404, "NOT_FOUND", `Project not found: ${projectId}`);
+        }
+
+        if (!this.services.managerAllocationService) {
+          throw new ApiError(500, "SERVICE_UNAVAILABLE", "ManagerAllocationService is not configured");
+        }
+
+        const body = await readJsonBody(req);
+        const allocationId = body.allocationId ? String(body.allocationId).trim() : "";
+        if (!allocationId) {
+          throw new ApiError(400, "BAD_REQUEST", "Allocation ID is required");
+        }
+
+        const allocation = this.services.managerAllocationService.get(allocationId);
+        if (!allocation) {
+          throw new ApiError(404, "NOT_FOUND", `Allocation not found: ${allocationId}`);
+        }
+
+        if (allocation.projectId !== projectId) {
+          throw new ApiError(400, "BAD_REQUEST", `Allocation '${allocationId}' does not belong to project '${projectId}'`);
+        }
+
+        const bossId = this.services.bossAgentId ?? this.services.registry.getByRole("boss")[0]?.id;
+        const approverId = body.approvedBy ? String(body.approvedBy).trim() : bossId;
+
+        if (!approverId) {
+          throw new ApiError(403, "FORBIDDEN", "Approver agent ID is required");
+        }
+
+        const approverAgent = this.services.registry.get(approverId);
+        if (!approverAgent) {
+          throw new ApiError(403, "FORBIDDEN", `Approver agent not found: ${approverId}`);
+        }
+
+        if (approverAgent.role !== "boss") {
+          throw new ApiError(403, "FORBIDDEN", `Agent '${approverId}' is a ${approverAgent.role}, only a Boss can approve allocation`);
+        }
+
+        if (approverId !== allocation.assignedBy) {
+          throw new ApiError(403, "FORBIDDEN", `Only the assigned Boss '${allocation.assignedBy}' can approve allocation '${allocationId}'`);
+        }
+
+        const approveResult = this.services.managerAllocationService.approveAllocation(allocationId, approverId);
+
+        if (approveResult.decision === "REJECTED") {
+          if (approveResult.reason.includes("not awaiting approval") || allocation.status !== "PROPOSED") {
+            throw new ApiError(409, "ALLOCATION_ALREADY_APPROVED", approveResult.reason);
+          }
+          if (approveResult.reason.includes("Only the assigned Boss")) {
+            throw new ApiError(403, "FORBIDDEN", approveResult.reason);
+          }
+          throw new ApiError(400, "APPROVAL_REJECTED", approveResult.reason);
+        }
+
+        if (approveResult.decision === "APPROVED" && approveResult.allocation) {
+          return sendJson(200, {
+            success: true,
+            data: toSafeAllocation(approveResult.allocation),
+            timestamp,
+          });
+        }
+
+        throw new ApiError(400, "APPROVAL_REJECTED", approveResult.reason || "Manager allocation approval failed");
+      }
+
       // Route: POST /projects (Governed Client Project Intake)
       if (method === "POST" && pathname === "/projects") {
         const authContext = this.authenticator.authenticate(req);

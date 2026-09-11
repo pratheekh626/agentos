@@ -510,9 +510,62 @@ async function runIntegrationTest() {
       const dupeJson = dupeAlloc.json<ApiResponseError>();
       assert(dupeJson.error.code === "ALLOCATION_EXISTS", "Error code must be ALLOCATION_EXISTS");
       console.log("STEP 8c: Duplicate allocation attempt rejected with 409 Conflict");
+
+      // Save allocationId for STEP 9
+      (globalThis as any).e2eAllocationId = allocPayload.allocationId;
     }
 
-    // ── STEP 9: Read Endpoints GET /agents & GET /tasks ──────────────────────
+    // ── STEP 9: POST /projects/:projectId/approve-allocation (Governed Boss Approval Command)
+    {
+      const targetAllocId = (globalThis as any).e2eAllocationId;
+      const approvePayload = {
+        allocationId: targetAllocId,
+        approvedBy: boss.id,
+      };
+
+      // Security check: Manager approval attempt -> 403
+      const mgrApprove = await httpPost(port, `/projects/${newProjectId}/approve-allocation`, authHeadersAlpha, {
+        allocationId: targetAllocId,
+        approvedBy: manager.id,
+      });
+      assert(mgrApprove.statusCode === 403, "Manager approval attempt must receive 403 Forbidden");
+      console.log("STEP 9a: Manager approval attempt rejected with 403 Forbidden");
+
+      // Security check: Worker approval attempt -> 403
+      const wkrApprove = await httpPost(port, `/projects/${newProjectId}/approve-allocation`, authHeadersAlpha, {
+        allocationId: targetAllocId,
+        approvedBy: worker.id,
+      });
+      assert(wkrApprove.statusCode === 403, "Worker approval attempt must receive 403 Forbidden");
+      console.log("STEP 9b: Worker approval attempt rejected with 403 Forbidden");
+
+      // Security check: Client Beta approval attempt -> 403
+      const betaApprove = await httpPost(port, `/projects/${newProjectId}/approve-allocation`, authHeadersBeta, approvePayload);
+      assert(betaApprove.statusCode === 403, "Client Beta approve-allocation attempt must receive 403 Forbidden");
+      console.log("STEP 9c: Client Beta approve-allocation attempt rejected with 403 Forbidden");
+
+      // Valid Boss approval by Client Alpha over HTTP socket
+      const res = await httpPost(port, `/projects/${newProjectId}/approve-allocation`, authHeadersAlpha, approvePayload);
+      assert(res.statusCode === 200, `POST /projects/:projectId/approve-allocation should return 200 OK (got ${res.statusCode}: ${res.body})`);
+      const json = res.json<ApiResponseSuccess<any>>();
+      assert(json.success === true, "Response success must be true");
+      assert(json.data.allocationId === targetAllocId, "Allocation ID must match");
+      assert(json.data.status === "APPROVED", "Allocation status MUST transition to 'APPROVED'");
+      assert(json.data.status !== "ACTIVE", "Approved allocation MUST NOT be active");
+
+      // Verify worker state remains strictly idle and untouched
+      assert(worker.status === "idle", "Worker agent must remain idle (no tasks assigned/scheduled/executed)");
+      console.log("STEP 9d: POST /projects/:projectId/approve-allocation succeeded: 200 OK (status transitions to APPROVED, NOT ACTIVE)");
+
+      // Duplicate approval attempt -> 409 Conflict
+      const dupeApprove = await httpPost(port, `/projects/${newProjectId}/approve-allocation`, authHeadersAlpha, approvePayload);
+      assert(dupeApprove.statusCode === 409, "Duplicate approval attempt must return 409 Conflict");
+      const dupeJson = dupeApprove.json<ApiResponseError>();
+      assert(dupeJson.error.code === "ALLOCATION_ALREADY_APPROVED", "Error code must be ALLOCATION_ALREADY_APPROVED");
+      console.log("STEP 9e: Duplicate approval attempt rejected with 409 Conflict");
+    }
+
+    // ── STEP 10: Read Endpoints GET /agents & GET /tasks ─────────────────────
     {
       const resAgents = await httpGet(port, "/agents", authHeadersAlpha);
       assert(resAgents.statusCode === 200, "GET /agents should return 200");
@@ -521,14 +574,14 @@ async function runIntegrationTest() {
 
       const resTask = await httpGet(port, `/tasks/${taskId}`, authHeadersAlpha);
       assert(resTask.statusCode === 200, "GET /tasks/:taskId should return 200");
-      console.log("STEP 9: GET /agents and GET /tasks/:taskId verified");
+      console.log("STEP 10: GET /agents and GET /tasks/:taskId verified");
     }
 
-    // ── STEP 10: Unauthorized & Unauthenticated Rejections ────────────────────
+    // ── STEP 11: Unauthorized & Unauthenticated Rejections ────────────────────
     {
       const resUnauth = await httpPost(port, "/projects", {}, { input: "Build feature" });
       assert(resUnauth.statusCode === 401, "Unauthenticated POST /projects must return 401 Unauthorized");
-      console.log("STEP 10: Unauthenticated POST /projects rejected with 401 Unauthorized");
+      console.log("STEP 11: Unauthenticated POST /projects rejected with 401 Unauthorized");
     }
 
     console.log(`

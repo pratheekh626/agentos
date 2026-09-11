@@ -806,6 +806,150 @@ async function runTests() {
   }
   console.log("TEST 55 passed: Duplicate allocation -> 409 Conflict");
 
+  const validApprovePayload = {
+    allocationId: "alloc-alpha-1",
+    approvedBy: boss.id,
+  };
+
+  // ── TEST 56: POST /projects/:projectId/approve-allocation unauthenticated -> 401 ──
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/approve-allocation", {}, validApprovePayload);
+    assert(res.statusCode === 401, "Unauthenticated approve-allocation should return 401");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "UNAUTHENTICATED", "Error code should be UNAUTHENTICATED");
+  }
+  console.log("TEST 56 passed: POST /projects/:projectId/approve-allocation unauthenticated -> 401");
+
+  // ── TEST 57: Client B attempting to approve Client A allocation -> 403 ──────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/approve-allocation", authHeadersB, validApprovePayload);
+    assert(res.statusCode === 403, "Unauthorized client approve-allocation should return 403");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "FORBIDDEN", "Error code should be FORBIDDEN");
+  }
+  console.log("TEST 57 passed: Client B attempting to approve Client A allocation -> 403");
+
+  // ── TEST 58: Unknown project -> 404 ─────────────────────────────────────────
+  {
+    const authHeadersMissing = {
+      "x-client-id": "client-a",
+      "x-authorized-projects": "nonexistent-proj",
+    };
+    const res = await request(server, "POST", "/projects/nonexistent-proj/approve-allocation", authHeadersMissing, validApprovePayload);
+    assert(res.statusCode === 404, "Unknown project approve-allocation should return 404");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "NOT_FOUND", "Error code should be NOT_FOUND");
+  }
+  console.log("TEST 58 passed: Unknown project -> 404");
+
+  // ── TEST 59: Unknown allocation -> 404 ──────────────────────────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/approve-allocation", authHeadersA, {
+      allocationId: "nonexistent-alloc-id",
+    });
+    assert(res.statusCode === 404, "Unknown allocation approve-allocation should return 404");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "NOT_FOUND", "Error code should be NOT_FOUND");
+  }
+  console.log("TEST 59 passed: Unknown allocation -> 404");
+
+  // ── TEST 60: Allocation from another project -> 400 ─────────────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-tamper/approve-allocation", authHeadersA, {
+      allocationId: "alloc-alpha-1", // belongs to proj-post-alpha, not proj-tamper
+    });
+    assert(res.statusCode === 400, "Allocation from another project should return 400");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "BAD_REQUEST", "Error code should be BAD_REQUEST");
+  }
+  console.log("TEST 60 passed: Allocation from another project -> 400");
+
+  // ── TEST 61: Missing allocationId -> 400 ────────────────────────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/approve-allocation", authHeadersA, {});
+    assert(res.statusCode === 400, "Missing allocationId should return 400");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "BAD_REQUEST", "Error code should be BAD_REQUEST");
+  }
+  console.log("TEST 61 passed: Missing allocationId -> 400");
+
+  // ── TEST 62, 63, 64, 65: Non-Boss / Manager / Worker / Wrong Boss approval -> 403 ──
+  {
+    // Manager attempting approval
+    const resMgr = await request(server, "POST", "/projects/proj-post-alpha/approve-allocation", authHeadersA, {
+      allocationId: "alloc-alpha-1",
+      approvedBy: manager.id,
+    });
+    assert(resMgr.statusCode === 403, "Manager attempting approval must be rejected with 403");
+
+    // Worker attempting approval
+    const resWkr = await request(server, "POST", "/projects/proj-post-alpha/approve-allocation", authHeadersA, {
+      allocationId: "alloc-alpha-1",
+      approvedBy: worker.id,
+    });
+    assert(resWkr.statusCode === 403, "Worker attempting approval must be rejected with 403");
+
+    // Boss from wrong organization / hierarchy
+    const resOtherBoss = await request(server, "POST", "/projects/proj-post-alpha/approve-allocation", authHeadersA, {
+      allocationId: "alloc-alpha-1",
+      approvedBy: otherBoss.id,
+    });
+    assert(resOtherBoss.statusCode === 403, "Boss from wrong organization must be rejected with 403");
+  }
+  console.log("TEST 62-65 passed: Non-Boss / Manager / Worker / Wrong Boss approval rejected (403)");
+
+  // ── TEST 66-77, 81: Valid Boss approval & lifecycle boundary assertions ──────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/approve-allocation", authHeadersA, validApprovePayload);
+    assert(res.statusCode === 200, `Valid Boss approval should return 200 OK (got ${res.statusCode}: ${res.body})`);
+    const json = res.json<ApiResponseSuccess<any>>();
+    assert(json.success === true, "Response success must be true");
+
+    const alloc = json.data;
+    assert(alloc.allocationId === "alloc-alpha-1", "Allocation ID must match");
+    assert(alloc.status === "APPROVED", "Allocation status MUST transition to 'APPROVED'"); // TEST 67
+    assert(alloc.assignedBy === boss.id, "AssignedBy must match Boss ID");
+
+    // TEST 68: Approval persisted in service state
+    const stored = managerAllocationService.get("alloc-alpha-1");
+    assert(stored !== undefined && stored.status === "APPROVED", "Approval must be persisted in service state");
+
+    // TEST 69: Allocation is NOT active
+    assert((stored.status as string) !== "ACTIVE", "Allocation must NOT be active");
+
+    // TEST 70-77: Boundary assertions (workers idle, tasks queued & unassigned, no execution/verification/payment/credits)
+    assert(worker.status === "idle", "Worker agent must remain idle");
+    const getTaskRes = await request(server, "GET", "/tasks/plan-alpha-1-requirement-1", authHeadersA);
+    if (getTaskRes.statusCode === 200) {
+      const taskJson = getTaskRes.json<ApiResponseSuccess<any>>();
+      assert(taskJson.data.assignedTo === null, "Task must remain unassigned");
+      assert(taskJson.data.status === "queued", "Task must remain queued");
+      assert(taskJson.data.spent === 0, "No credits spent");
+    }
+  }
+  console.log("TEST 66-77, 81 passed: Valid Boss approval -> 200 OK & status transitions to APPROVED (NOT ACTIVE, unassigned & unexecuted)");
+
+  // ── TEST 78 & 79: Body clientId & approvedBy tampering strictly rejected ──────
+  {
+    const tamperPayload = {
+      allocationId: "alloc-spoof-1",
+      approvedBy: manager.id, // Attempt to override approvedBy with manager
+      clientId: "spoofed-client-id",
+    };
+    const res = await request(server, "POST", "/projects/proj-post-alpha/approve-allocation", authHeadersA, tamperPayload);
+    assert(res.statusCode === 403, "Tampered approval with Manager approver must be rejected with 403");
+  }
+  console.log("TEST 78-79 passed: Body clientId & approvedBy tampering strictly rejected");
+
+  // ── TEST 80: Already approved allocation -> 409 Conflict ───────────────────
+  {
+    const res = await request(server, "POST", "/projects/proj-post-alpha/approve-allocation", authHeadersA, validApprovePayload);
+    assert(res.statusCode === 409, "Already approved allocation should return 409 Conflict");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "ALLOCATION_ALREADY_APPROVED", "Error code should be ALLOCATION_ALREADY_APPROVED");
+  }
+  console.log("TEST 80 passed: Already approved allocation -> 409 Conflict");
+
   console.log("\n✅ All ApiGatewayServer unit tests passed.");
 }
 
