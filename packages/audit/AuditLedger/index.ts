@@ -22,7 +22,10 @@ export type AuditEventType =
   | "ESCALATION_CREATED"
   | "ESCALATION_APPROVED"
   | "ESCALATION_REJECTED"
-  | "INTERVENTION_CREATED";
+  | "INTERVENTION_CREATED"
+  | "MEETING_CREATED"
+  | "MEETING_DECISION_CREATED"
+  | "MEETING_COMPLETED";
 
 export interface AuditEvent {
   id: string;

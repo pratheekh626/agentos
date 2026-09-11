@@ -26,6 +26,11 @@ import type {
   InterventionEvents,
   InterventionRecord,
 } from "../../orchestration/Intervention";
+import type {
+  ConferenceEvents,
+  Meeting,
+  MeetingDecision,
+} from "../../agents/ConferenceRoom";
 
 export class AuditEventBridge {
   private readonly ledger: AuditLedger;
@@ -36,6 +41,7 @@ export class AuditEventBridge {
   private readonly recoveryEventBus: EventBus<RecoveryEvents>;
   private readonly escalationEventBus: EventBus<EscalationEvents>;
   private readonly interventionEventBus: EventBus<InterventionEvents>;
+  private readonly conferenceEventBus: EventBus<ConferenceEvents>;
 
   private readonly evidenceHandler = (evidence: Evidence): void => {
     this.ledger.append({
@@ -263,6 +269,63 @@ export class AuditEventBridge {
     });
   };
 
+  private readonly handleMeetingCreated = (
+    meeting: Meeting
+  ): void => {
+    this.ledger.append({
+      id: `audit-meeting-created-${meeting.id}`,
+      type: "MEETING_CREATED",
+      actorId: meeting.calledBy,
+      targetId: meeting.id,
+      taskId: meeting.taskId,
+      action: "meeting_created",
+      details: {
+        projectId: meeting.projectId,
+        participants: meeting.participants,
+        agenda: meeting.agenda,
+      },
+      timestamp: meeting.createdAt,
+    });
+  };
+
+  private readonly handleMeetingDecision = (
+    decision: MeetingDecision
+  ): void => {
+    this.ledger.append({
+      id: `audit-meeting-decision-${decision.id}`,
+      type: "MEETING_DECISION_CREATED",
+      actorId: decision.decidedBy,
+      targetId: decision.meetingId,
+      taskId: null,
+      action: "meeting_decision_created",
+      details: {
+        decisionType: decision.decisionType,
+        summary: decision.summary,
+        taskIds: decision.taskIds,
+        managerId: decision.managerId,
+      },
+      timestamp: decision.createdAt,
+    });
+  };
+
+  private readonly handleMeetingCompleted = (
+    meeting: Meeting
+  ): void => {
+    this.ledger.append({
+      id: `audit-meeting-completed-${meeting.id}`,
+      type: "MEETING_COMPLETED",
+      actorId: meeting.calledBy,
+      targetId: meeting.id,
+      taskId: meeting.taskId,
+      action: "meeting_completed",
+      details: {
+        projectId: meeting.projectId,
+        participants: meeting.participants,
+      },
+      timestamp: meeting.completedAt ?? meeting.createdAt,
+    });
+  };
+
   constructor(
     ledger: AuditLedger,
     eventBus: EventBus<ExecutionEvents>,
@@ -271,7 +334,8 @@ export class AuditEventBridge {
     paymentEventBus?: EventBus<ProofToPayEvents>,
     recoveryEventBus?: EventBus<RecoveryEvents>,
     escalationEventBus?: EventBus<EscalationEvents>,
-    interventionEventBus?: EventBus<InterventionEvents>
+    interventionEventBus?: EventBus<InterventionEvents>,
+    conferenceEventBus?: EventBus<ConferenceEvents>
   ) {
     this.ledger = ledger;
     this.eventBus = eventBus;
@@ -287,6 +351,8 @@ export class AuditEventBridge {
       escalationEventBus ?? new EventBus<EscalationEvents>();
     this.interventionEventBus =
       interventionEventBus ?? new EventBus<InterventionEvents>();
+    this.conferenceEventBus =
+      conferenceEventBus ?? new EventBus<ConferenceEvents>();
 
     this.eventBus.on(
       "execution.evidence_created",
@@ -352,6 +418,19 @@ export class AuditEventBridge {
     this.interventionEventBus.on(
       "intervention.created",
       this.handleInterventionCreated
+    );
+
+    this.conferenceEventBus.on(
+      "meeting.created",
+      this.handleMeetingCreated
+    );
+    this.conferenceEventBus.on(
+      "meeting.decision_created",
+      this.handleMeetingDecision
+    );
+    this.conferenceEventBus.on(
+      "meeting.completed",
+      this.handleMeetingCompleted
     );
   }
 
@@ -420,6 +499,19 @@ export class AuditEventBridge {
     this.interventionEventBus.off(
       "intervention.created",
       this.handleInterventionCreated
+    );
+
+    this.conferenceEventBus.off(
+      "meeting.created",
+      this.handleMeetingCreated
+    );
+    this.conferenceEventBus.off(
+      "meeting.decision_created",
+      this.handleMeetingDecision
+    );
+    this.conferenceEventBus.off(
+      "meeting.completed",
+      this.handleMeetingCompleted
     );
   }
 
