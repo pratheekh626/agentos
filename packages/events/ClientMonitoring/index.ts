@@ -10,11 +10,22 @@ export interface ClientAuthorizationPolicy {
 }
 
 export class DefaultClientAuthorizationPolicy implements ClientAuthorizationPolicy {
+  private readonly projectOwners = new Map<string, string>();
+
+  registerOwner(projectId: string, clientId: string): void {
+    if (projectId && clientId) {
+      this.projectOwners.set(projectId, clientId);
+    }
+  }
+
   isAuthorized(auth: ClientAuthContext, projectId: string): boolean {
     if (!auth || !auth.clientId || !projectId || !projectId.trim()) {
       return false;
     }
-    return auth.authorizedProjectIds.includes(projectId);
+    if (auth.authorizedProjectIds.includes(projectId)) {
+      return true;
+    }
+    return this.projectOwners.get(projectId) === auth.clientId;
   }
 }
 
@@ -56,6 +67,13 @@ export class ClientMonitoringService {
     options: ClientMonitoringOptions = {}
   ) {
     this.policy = options.authorizationPolicy ?? new DefaultClientAuthorizationPolicy();
+  }
+
+  registerClientProject(clientId: string, projectId: string): void {
+    if (!clientId || !projectId) return;
+    if (this.policy instanceof DefaultClientAuthorizationPolicy) {
+      this.policy.registerOwner(projectId, clientId);
+    }
   }
 
   registerProjectTask(projectId: string, taskId: string): void {

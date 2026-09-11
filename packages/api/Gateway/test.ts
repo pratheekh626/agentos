@@ -5,6 +5,8 @@ import { createBoss } from "../../agents/Boss";
 import { createWorker } from "../../agents/Workers";
 import { LiveEventStream } from "../../events/LiveEventStream";
 import { ClientMonitoringService } from "../../events/ClientMonitoring";
+import { RequirementUnderstandingService } from "../../agents/RequirementUnderstanding";
+import { ProjectIntakeService } from "../../agents/ProjectIntake";
 import {
   ApiGatewayServer,
   HeaderDevAuthenticator,
@@ -73,12 +75,26 @@ function request(
   server: ApiGatewayServer,
   method: string,
   url: string,
-  headers: Record<string, string> = {}
+  headers: Record<string, string> = {},
+  bodyData?: string | object
 ): Promise<MockResponse> {
   return new Promise((resolve) => {
     const req = makeMockReq(method, url, headers);
     const res = makeMockRes(resolve);
-    server.handleRequest(req, res);
+
+    const handlePromise = server.handleRequest(req, res);
+
+    if (bodyData !== undefined) {
+      const payload = typeof bodyData === "string" ? bodyData : JSON.stringify(bodyData);
+      process.nextTick(() => {
+        req.emit("data", Buffer.from(payload));
+        req.emit("end");
+      });
+    } else {
+      process.nextTick(() => {
+        req.emit("end");
+      });
+    }
   });
 }
 
@@ -89,7 +105,6 @@ console.log("Running ApiGatewayServer Unit Tests...\n");
 const registry = new AgentRegistry();
 const boss = createBoss("boss-api", "Boss Agent");
 
-// Attach internal non-public identity/sensitive properties to test allowlist stripping
 const worker = createWorker("worker-api", "Worker Agent", boss.id);
 (worker as any).identityFingerprint = "SECRET_FINGERPRINT";
 (worker as any).riskScore = 99;
@@ -99,6 +114,8 @@ registry.register(worker);
 
 const stream = new LiveEventStream();
 const monitoring = new ClientMonitoringService(stream);
+const requirementService = new RequirementUnderstandingService();
+const projectIntakeService = new ProjectIntakeService(registry);
 
 monitoring.registerProjectTask("proj-1", "task-1");
 
@@ -124,7 +141,6 @@ const sampleTask: Task = {
   updatedAt: "2026-09-11T10:00:00Z",
 };
 
-// Add internal sensitive key to test allowlist serialization
 (sampleTask as any).internalGatewayToken = "SECRET_TOKEN";
 
 const sampleTaskMap = new Map<string, Task>([["task-1", sampleTask]]);
@@ -132,12 +148,19 @@ const sampleTaskMap = new Map<string, Task>([["task-1", sampleTask]]);
 const services: ApiServicesContainer = {
   registry,
   monitoringService: monitoring,
+  requirementService,
+  projectIntakeService,
+  bossAgentId: boss.id,
   taskProvider: {
     getTask: (id) => sampleTaskMap.get(id) ?? null,
     getTasksForProject: (projId) => (projId === "proj-1" ? [sampleTask] : []),
   },
   projectProvider: {
-    getProject: (id) => (id === "proj-1" ? { id: "proj-1", status: "active", title: "Alpha Project" } : null),
+    getProject: (id) => {
+      if (id === "proj-1") return { id: "proj-1", status: "active", title: "Alpha Project" };
+      const proj = projectIntakeService.get(id);
+      return proj ? { id: proj.id, status: proj.status, title: proj.objective } : null;
+    },
   },
 };
 
@@ -284,7 +307,7 @@ async function runTests() {
   }
   console.log("TEST 13 passed: Sensitive/internal fields are not exposed");
 
-  // ── TEST 14: API does not mutate domain state ────────────────────────────────
+  // ── TEST 14: API does not mutate domain state on GET requests ─────────────────
   {
     const initialAgentCount = registry.getAll().length;
     const initialStreamCount = stream.getEventCount();
@@ -295,7 +318,7 @@ async function runTests() {
     assert(registry.getAll().length === initialAgentCount, "Agent registry count unchanged");
     assert(stream.getEventCount() === initialStreamCount, "Stream event count unchanged");
   }
-  console.log("TEST 14 passed: API does not mutate domain state");
+  console.log("TEST 14 passed: API does not mutate domain state on GET requests");
 
   // ── TEST 15: Authentication boundary is isolated from authorization ─────────
   {
@@ -317,6 +340,80 @@ async function runTests() {
     assert(resB.statusCode === 403, "Client B forbidden for proj-1");
   }
   console.log("TEST 16 passed: Multiple clients remain isolated");
+
+  // ── TEST 17: POST /projects unauthenticated is rejected (401) ─────────────────
+  {
+    const res = await request(server, "POST", "/projects", {}, { input: "Build app" });
+    assert(res.statusCode === 401, "Unauthenticated POST /projects should return 401");
+  }
+  console.log("TEST 17 passed: POST /projects unauthenticated rejected (401)");
+
+  // ── TEST 18: POST /projects empty / malformed request rejected (400) ─────────
+  {
+    const res1 = await request(server, "POST", "/projects", authHeadersA, {});
+    assert(res1.statusCode === 400, "Empty POST /projects payload should return 400");
+
+    const res2 = await request(server, "POST", "/projects", authHeadersA, "not json");
+    assert(res2.statusCode === 400, "Malformed JSON POST /projects payload should return 400");
+  }
+  console.log("TEST 18 passed: POST /projects empty / malformed request rejected (400)");
+
+  // ── TEST 19: POST /projects valid input -> 201 Created & safe DTO ────────────
+  {
+    const postPayload = {
+      projectId: "proj-post-alpha",
+      input: "Objective: Build dashboard\nRequirements:\n- Add SSE feed\nConstraints:\n- Node native\nDeliverables:\n- Source code\nAcceptance Criteria:\n- Test passes",
+      clientId: "spoofed-client-id", // Attempt to spoof clientId in body
+    };
+
+    const res = await request(server, "POST", "/projects", authHeadersA, postPayload);
+    assert(res.statusCode === 201, `Valid POST /projects should return 201 Created (got ${res.statusCode}: ${res.body})`);
+    const json = res.json<ApiResponseSuccess<any>>();
+    assert(json.success === true, "Response success must be true");
+    assert(json.data.projectId === "proj-post-alpha", "ProjectId must match");
+    assert(json.data.clientId === "client-a", "ClientId MUST be authoritative 'client-a', NOT spoofed");
+    assert(json.data.status === "planned", "Status must be 'planned'");
+    assert(!("internalReason" in json.data), "Internal details must not be in safe project DTO");
+
+    // Verify project is now authorized for client-a and accessible via GET
+    const getRes = await request(server, "GET", "/projects/proj-post-alpha", authHeadersA);
+    assert(getRes.statusCode === 200, "Created project must be accessible via GET for client-a");
+
+    // Verify client-b CANNOT access client-a's newly created project
+    const crossGet = await request(server, "GET", "/projects/proj-post-alpha", authHeadersB);
+    assert(crossGet.statusCode === 403, "Client B must receive 403 Forbidden attempting to access Client A's project");
+  }
+  console.log("TEST 19 passed: POST /projects valid input -> 201 Created & cross-client isolated");
+
+  // ── TEST 20: POST /projects needs clarification -> 200 OK ────────────────────
+  {
+    const vaguePayload = {
+      projectId: "proj-vague-1",
+      input: "Fix stuff",
+    };
+
+    const res = await request(server, "POST", "/projects", authHeadersA, vaguePayload);
+    assert(res.statusCode === 200, "Needs clarification should return 200 OK");
+    const json = res.json<ApiResponseSuccess<any>>();
+    assert(json.data.status === "needs_clarification", "Status must be needs_clarification");
+    assert(Array.isArray(json.data.clarificationQuestions), "Must include clarification questions");
+    assert(json.data.clarificationQuestions.length > 0, "Questions array must not be empty");
+  }
+  console.log("TEST 20 passed: POST /projects needs clarification -> 200 OK");
+
+  // ── TEST 21: POST /projects duplicate projectId -> 409 Conflict ──────────────
+  {
+    const dupePayload = {
+      projectId: "proj-post-alpha", // Already created in TEST 19
+      input: "Objective: Duplicate test\nRequirements:\n- Duplicate\nConstraints:\n- None\nDeliverables:\n- None\nAcceptance Criteria:\n- None",
+    };
+
+    const res = await request(server, "POST", "/projects", authHeadersA, dupePayload);
+    assert(res.statusCode === 409, "Duplicate project ID should return 409 Conflict");
+    const json = res.json<ApiResponseError>();
+    assert(json.error.code === "PROJECT_EXISTS", "Error code should be PROJECT_EXISTS");
+  }
+  console.log("TEST 21 passed: POST /projects duplicate projectId -> 409 Conflict");
 
   console.log("\n✅ All ApiGatewayServer unit tests passed.");
 }

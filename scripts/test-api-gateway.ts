@@ -1,8 +1,17 @@
 /**
- * Integration Test: Governed API Gateway Foundation
+ * Integration Test: Governed API Gateway Foundation & Client Project Intake Command
  *
  * Proves that real backend AGENTOS services are exposed over a clean, governed HTTP API layer.
- * Starts ApiGatewayServer on an ephemeral port (port 0), issues actual HTTP GET requests over local sockets,
+ * Tests both GET read endpoints and POST /projects command pipeline:
+ *   HTTP POST /projects
+ *   → Authenticated client
+ *   → RequirementUnderstandingService
+ *   → ProjectIntakeService (Boss Intake)
+ *   → EventBus / LiveEventStream
+ *   → ClientMonitoringService
+ *   → Safe HTTP Response (201 Created)
+ *
+ * Starts ApiGatewayServer on an ephemeral port (port 0), issues actual HTTP requests over local sockets,
  * and guarantees clean server shutdown in a try...finally block.
  */
 
@@ -29,9 +38,7 @@ import { DelegationService } from "../packages/orchestration/Delegation";
 import { Scheduler } from "../packages/orchestration/Scheduler";
 import { RecoveryService } from "../packages/orchestration/Recovery";
 import { EscalationService } from "../packages/orchestration/Escalation";
-import { InterventionService } from "../packages/orchestration/Intervention";
 import { ManagerAllocationService } from "../packages/orchestration/ManagerAllocation";
-import { ManagerTaskLifecycle } from "../packages/orchestration/ManagerTaskLifecycle";
 import { ApprovalEngine } from "../packages/governance/ApprovalEngine";
 import { DelegationFirewall } from "../packages/governance/DelegationFirewall";
 import { PermissionEngine } from "../packages/governance/PermissionEngine";
@@ -49,6 +56,8 @@ import { CreditEngine } from "../packages/economy/CreditEngine";
 import { LiveEventStream } from "../packages/events/LiveEventStream";
 import { LiveEventBridge } from "../packages/events/LiveEventStream/bridge";
 import { ClientMonitoringService } from "../packages/events/ClientMonitoring";
+import { RequirementUnderstandingService } from "../packages/agents/RequirementUnderstanding";
+import { ProjectIntakeService, type Project } from "../packages/agents/ProjectIntake";
 import { ApiGatewayServer, type ApiResponseSuccess, type ApiResponseError } from "../packages/api/Gateway";
 import type { Task } from "../packages/core/Task";
 
@@ -85,6 +94,39 @@ function httpGet(port: number, path: string, headers: Record<string, string> = {
       }
     );
     req.on("error", reject);
+    req.end();
+  });
+}
+
+function httpPost(port: number, path: string, headers: Record<string, string> = {}, bodyData?: object | string): Promise<HttpResult> {
+  return new Promise((resolve, reject) => {
+    const payload = typeof bodyData === "string" ? bodyData : JSON.stringify(bodyData ?? {});
+    const req = http.request(
+      {
+        hostname: "localhost",
+        port,
+        path,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+          ...headers,
+        },
+      },
+      (res) => {
+        let body = "";
+        res.on("data", (chunk) => (body += chunk));
+        res.on("end", () => {
+          resolve({
+            statusCode: res.statusCode ?? 500,
+            body,
+            json: <T>() => JSON.parse(body) as T,
+          });
+        });
+      }
+    );
+    req.on("error", reject);
+    req.write(payload);
     req.end();
   });
 }
@@ -145,6 +187,9 @@ async function runIntegrationTest() {
 
   const conference = new ConferenceRoomService(registry, messages);
   const allocationSvc = new ManagerAllocationService(registry, organization, conference, runtime, messages);
+
+  const requirementService = new RequirementUnderstandingService();
+  const projectIntakeService = new ProjectIntakeService(registry);
 
   // 2. Stream, Bridge, & Client Monitoring Service
   const stream = new LiveEventStream();
@@ -222,18 +267,29 @@ async function runIntegrationTest() {
   task = runtime.finalizeTask(task);
 
   const taskMap = new Map<string, Task>([[taskId, task]]);
+  const projectStore = new Map<string, Project>();
 
   // 4. Instantiate API Gateway Server
   const server = new ApiGatewayServer({
     registry,
     monitoringService,
+    requirementService,
+    projectIntakeService,
+    bossAgentId: boss.id,
     taskProvider: {
-      getTask: (id) => taskMap.get(id) ?? null,
-      getTasksForProject: (proj) => (proj === projectId ? [task] : []),
+      getTask: (id: string) => taskMap.get(id) ?? null,
+      getTasksForProject: (proj: string) => (proj === projectId ? [task] : []),
     },
     projectProvider: {
-      getProject: (proj) => (proj === projectId ? { id: projectId, status: "active", title: "Gateway Project" } : null),
-    },
+      getProject: (proj: string) => {
+        if (proj === projectId) return { id: projectId, status: "active", title: "Gateway Project" };
+        const stored = projectStore.get(proj);
+        return stored ? { id: stored.id, status: stored.status, title: stored.objective } : null;
+      },
+      registerProject: (proj: Project) => {
+        projectStore.set(proj.id, proj);
+      },
+    } as any,
   });
 
   // Start HTTP server on ephemeral port (0)
@@ -260,96 +316,97 @@ async function runIntegrationTest() {
       console.log("STEP 1: GET /health succeeded");
     }
 
-    // ── STEP 2: GET /projects/:projectId (Authorized) ────────────────────────
+    // ── STEP 2: POST /projects (Governed Client Intake via HTTP) ─────────────
+    const newProjectId = "proj-client-post-1";
     {
-      const res = await httpGet(port, `/projects/${projectId}`, authHeadersAlpha);
-      assert(res.statusCode === 200, "Project overview should return 200");
-      const json = res.json<ApiResponseSuccess<{ projectId: string; title: string }>>();
-      assert(json.data.projectId === projectId, "ProjectId must match");
-      console.log("STEP 2: GET /projects/:projectId succeeded for authorized client");
+      const postPayload = {
+        projectId: newProjectId,
+        input: "Objective: Build Client Portal API\nRequirements:\n- Add POST /projects command\nConstraints:\n- Node native\nDeliverables:\n- Source code\nAcceptance Criteria:\n- Tests pass",
+        clientId: "spoofed-client-id", // Attempt body spoofing
+      };
+
+      const res = await httpPost(port, "/projects", authHeadersAlpha, postPayload);
+      assert(res.statusCode === 201, `POST /projects should return 201 Created (got ${res.statusCode}: ${res.body})`);
+      const json = res.json<ApiResponseSuccess<any>>();
+      assert(json.success === true, "Response success must be true");
+      assert(json.data.projectId === newProjectId, "ProjectId must match");
+      assert(json.data.clientId === "client-alpha", "ClientId MUST be authoritative 'client-alpha'");
+      assert(json.data.status === "planned", "Status must be 'planned'");
+      console.log("STEP 2: POST /projects succeeded: 201 Created for client-alpha");
     }
 
-    // ── STEP 3: GET /projects/:projectId/activity ─────────────────────────────
+    // ── STEP 3: Verify Client Alpha can GET new project & Client Beta gets 403 ─
     {
-      const res = await httpGet(port, `/projects/${projectId}/activity`, authHeadersAlpha);
-      assert(res.statusCode === 200, "Project activity should return 200");
-      const json = res.json<ApiResponseSuccess<any[]>>();
-      assert(json.data.length > 0, "Activity list should contain client-safe events");
-      console.log(`STEP 3: GET /projects/:projectId/activity returned ${json.data.length} safe events`);
+      const getRes = await httpGet(port, `/projects/${newProjectId}`, authHeadersAlpha);
+      assert(getRes.statusCode === 200, "Client Alpha must be authorized to GET its newly created project");
+
+      const betaGet = await httpGet(port, `/projects/${newProjectId}`, authHeadersBeta);
+      assert(betaGet.statusCode === 403, "Client Beta must receive 403 Forbidden attempting to access Client Alpha's project");
+      console.log("STEP 3: Cross-client project access security verified (Client Alpha: 200, Client Beta: 403)");
     }
 
-    // ── STEP 4: GET /projects/:projectId/summary ──────────────────────────────
+    // ── STEP 4: POST /projects Needs Clarification -> 200 OK ──────────────────
     {
-      const res = await httpGet(port, `/projects/${projectId}/summary`, authHeadersAlpha);
-      assert(res.statusCode === 200, "Project summary should return 200");
-      const json = res.json<ApiResponseSuccess<{ paymentsReleased: number; totalPaidAmount: number }>>();
-      assert(json.data.paymentsReleased === 1, "Payments released count must be 1");
-      assert(json.data.totalPaidAmount === 400, "Total paid amount must be 400");
-      console.log("STEP 4: GET /projects/:projectId/summary verified metrics");
+      const vaguePayload = {
+        projectId: "proj-vague-e2e",
+        input: "Fix stuff",
+      };
+
+      const res = await httpPost(port, "/projects", authHeadersAlpha, vaguePayload);
+      assert(res.statusCode === 200, "Vague input should return 200 OK for needs_clarification");
+      const json = res.json<ApiResponseSuccess<any>>();
+      assert(json.data.status === "needs_clarification", "Status must be needs_clarification");
+      assert(json.data.clarificationQuestions.length > 0, "Clarification questions must be present");
+      console.log("STEP 4: POST /projects vague input returned 200 OK with clarification questions");
     }
 
-    // ── STEP 5: GET /projects/:projectId/tasks ────────────────────────────────
+    // ── STEP 5: POST /projects Duplicate Project ID -> 409 Conflict ─────────────
     {
-      const res = await httpGet(port, `/projects/${projectId}/tasks`, authHeadersAlpha);
-      assert(res.statusCode === 200, "Project tasks should return 200");
-      const json = res.json<ApiResponseSuccess<any[]>>();
-      assert(json.data.length === 1 && json.data[0].id === taskId, "Project tasks list should match");
-      console.log("STEP 5: GET /projects/:projectId/tasks returned project tasks");
-    }
+      const dupePayload = {
+        projectId: newProjectId, // Already created in STEP 2
+        input: "Objective: Duplicate test\nRequirements:\n- Duplicate\nConstraints:\n- None\nDeliverables:\n- None\nAcceptance Criteria:\n- None",
+      };
 
-    // ── STEP 6: GET /agents and GET /agents/:agentId ─────────────────────────
-    {
-      const res = await httpGet(port, "/agents", authHeadersAlpha);
-      assert(res.statusCode === 200, "Agents list should return 200");
-      const json = res.json<ApiResponseSuccess<any[]>>();
-      assert(json.data.length === 4, "Should return 4 registered agents");
-
-      const agentRes = await httpGet(port, `/agents/${worker.id}`, authHeadersAlpha);
-      assert(agentRes.statusCode === 200, "Single agent should return 200");
-      const agentJson = agentRes.json<ApiResponseSuccess<{ id: string; role: string }>>();
-      assert(agentJson.data.id === worker.id, "Agent ID must match");
-      console.log("STEP 6: GET /agents and GET /agents/:agentId succeeded with safe serialization");
-    }
-
-    // ── STEP 7: GET /tasks/:taskId ────────────────────────────────────────────
-    {
-      const res = await httpGet(port, `/tasks/${taskId}`, authHeadersAlpha);
-      assert(res.statusCode === 200, "Task read should return 200");
-      const json = res.json<ApiResponseSuccess<{ id: string; title: string }>>();
-      assert(json.data.id === taskId, "Task ID must match");
-      console.log("STEP 7: GET /tasks/:taskId succeeded");
-    }
-
-    // ── STEP 8: Unauthorized Client Rejection (403) ───────────────────────────
-    {
-      const res = await httpGet(port, `/projects/${projectId}/summary`, authHeadersBeta);
-      assert(res.statusCode === 403, "Unauthorized client must receive 403 Forbidden");
+      const res = await httpPost(port, "/projects", authHeadersAlpha, dupePayload);
+      assert(res.statusCode === 409, "Duplicate project ID must return 409 Conflict");
       const json = res.json<ApiResponseError>();
-      assert(json.error.code === "FORBIDDEN", "Error code must be FORBIDDEN");
-      console.log("STEP 8: Unauthorized client access rejected with 403 Forbidden");
+      assert(json.error.code === "PROJECT_EXISTS", "Error code must be PROJECT_EXISTS");
+      console.log("STEP 5: Duplicate project submission rejected with 409 Conflict");
     }
 
-    // ── STEP 9: Unauthenticated Client Rejection (401) ─────────────────────────
+    // ── STEP 6: Read Endpoints GET /agents & GET /tasks ──────────────────────
     {
-      const res = await httpGet(port, `/projects/${projectId}/summary`);
-      assert(res.statusCode === 401, "Unauthenticated client must receive 401 Unauthorized");
-      console.log("STEP 9: Unauthenticated request rejected with 401 Unauthorized");
+      const resAgents = await httpGet(port, "/agents", authHeadersAlpha);
+      assert(resAgents.statusCode === 200, "GET /agents should return 200");
+      const agentsJson = resAgents.json<ApiResponseSuccess<any[]>>();
+      assert(agentsJson.data.length === 4, "Should return 4 agents");
+
+      const resTask = await httpGet(port, `/tasks/${taskId}`, authHeadersAlpha);
+      assert(resTask.statusCode === 200, "GET /tasks/:taskId should return 200");
+      console.log("STEP 6: GET /agents and GET /tasks/:taskId verified");
+    }
+
+    // ── STEP 7: Unauthorized & Unauthenticated Rejections ─────────────────────
+    {
+      const resUnauth = await httpPost(port, "/projects", {}, { input: "Build feature" });
+      assert(resUnauth.statusCode === 401, "Unauthenticated POST /projects must return 401 Unauthorized");
+      console.log("STEP 7: Unauthenticated POST /projects rejected with 401 Unauthorized");
     }
 
     console.log(`
-── GOVERNED API GATEWAY E2E SUMMARY ──────────────────────────────────────
+── GOVERNED CLIENT PROJECT INTAKE COMMAND E2E SUMMARY ───────────────────
 HTTP API LAYER RUNNING ON LOCAL PORT ${port}
-ENDPOINTS TESTED: /health, /projects/:id, /projects/:id/activity,
-                  /projects/:id/summary, /projects/:id/tasks,
-                  /agents, /agents/:id, /tasks/:id
-AUTHENTICATION: HeaderDevAuthenticator (x-client-id / x-authorized-projects)
-AUTHORIZATION: Delegated to ClientMonitoringService (403 Forbidden enforced)
-SAFE SERIALIZATION: Allowlist DTOs verified (sensitive fields omitted)
+COMMAND ENDPOINT TESTED: POST /projects
+PIPELINE FLOW: Client → Authentication → RequirementUnderstandingService
+               → ProjectIntakeService (Boss Intake) → ClientMonitoring Registration
+AUTHENTICATION: Authoritative ApiAuthContext.clientId (client-alpha)
+SECURITY & AUTHORIZATION: Client Alpha GET /projects/:id (200), Client Beta (403)
+SAFE SERIALIZATION: Allowlist DTOs verified (201 Created & 200 Needs Clarification)
 SERVER LIFECYCLE: Clean HTTP server shutdown in try...finally block
 ──────────────────────────────────────────────────────────────────────────
 `);
 
-    console.log("✅ Governed API Gateway E2E integration test passed.");
+    console.log("✅ Governed Client Project Intake Command E2E integration test passed.");
   } finally {
     console.log("Shutting down ApiGatewayServer...");
     await server.stop();

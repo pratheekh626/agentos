@@ -7,6 +7,8 @@ import type {
   ClientMonitoringService,
   ClientAuthContext,
 } from "../../events/ClientMonitoring";
+import type { RequirementUnderstandingService } from "../../agents/RequirementUnderstanding";
+import type { ProjectIntakeService, Project } from "../../agents/ProjectIntake";
 
 // ── Authentication Boundary ──────────────────────────────────────────────────
 
@@ -110,6 +112,14 @@ export interface SafeTaskDto {
   updatedAt: string;
 }
 
+export interface SafeProjectDto {
+  projectId: string;
+  clientId: string;
+  objective: string;
+  status: string;
+  createdAt: string;
+}
+
 export function toSafeAgent(agent: Agent): SafeAgentDto {
   return {
     id: agent.id,
@@ -136,6 +146,16 @@ export function toSafeTask(task: Task): SafeTaskDto {
   };
 }
 
+export function toSafeProject(project: Project): SafeProjectDto {
+  return {
+    projectId: project.id,
+    clientId: project.clientId,
+    objective: project.objective,
+    status: project.status,
+    createdAt: project.createdAt,
+  };
+}
+
 // ── Service Container & Read Adapters ────────────────────────────────────────
 
 export interface TaskProvider {
@@ -150,8 +170,38 @@ export interface ProjectProvider {
 export interface ApiServicesContainer {
   registry: AgentRegistry;
   monitoringService: ClientMonitoringService;
+  requirementService?: RequirementUnderstandingService;
+  projectIntakeService?: ProjectIntakeService;
+  bossAgentId?: string;
   taskProvider?: TaskProvider;
   projectProvider?: ProjectProvider;
+}
+
+// ── Helper: Read JSON Body ───────────────────────────────────────────────────
+
+function readJsonBody(req: IncomingMessage): Promise<any> {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (chunk) => {
+      data += chunk;
+      if (data.length > 1e6) {
+        req.destroy();
+        reject(new ApiError(400, "BAD_REQUEST", "Request payload too large"));
+      }
+    });
+    req.on("end", () => {
+      if (!data.trim()) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(data));
+      } catch {
+        reject(new ApiError(400, "BAD_REQUEST", "Invalid JSON payload"));
+      }
+    });
+    req.on("error", (err) => reject(err));
+  });
 }
 
 // ── Server & Gateway ─────────────────────────────────────────────────────────
@@ -171,7 +221,7 @@ export class ApiGatewayServer {
     this.authenticator = options.authenticator ?? new HeaderDevAuthenticator();
   }
 
-  handleRequest(req: IncomingMessage, res: ServerResponse): void {
+  async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const timestamp = new Date().toISOString();
 
     const sendJson = (statusCode: number, payload: ApiResponse<unknown>) => {
@@ -206,17 +256,117 @@ export class ApiGatewayServer {
       const parsedUrl = new URL(urlString, `http://${host}`);
       const pathname = parsedUrl.pathname;
 
-      if (method !== "GET") {
-        throw new ApiError(405, "METHOD_NOT_ALLOWED", `Method ${method} not allowed`);
-      }
-
       // Route: GET /health (Unauthenticated public health check)
-      if (pathname === "/health") {
+      if (method === "GET" && pathname === "/health") {
         return sendJson(200, {
           success: true,
           data: { status: "ok", service: "AGENTOS API Gateway" },
           timestamp,
         });
+      }
+
+      // Route: POST /projects (Governed Client Project Intake)
+      if (method === "POST" && pathname === "/projects") {
+        const authContext = this.authenticator.authenticate(req);
+        if (!authContext.isAuthenticated || !authContext.clientId) {
+          throw new ApiError(401, "UNAUTHENTICATED", "Authentication required. Missing or invalid authentication credentials.");
+        }
+
+        const clientId = authContext.clientId; // Authoritative client identity
+        const body = await readJsonBody(req);
+
+        const userRawInput = (body.input || body.description || "").trim();
+        if (!userRawInput) {
+          throw new ApiError(400, "BAD_REQUEST", "Project description/input is required");
+        }
+
+        if (!this.services.requirementService) {
+          throw new ApiError(500, "SERVICE_UNAVAILABLE", "RequirementUnderstandingService is not configured");
+        }
+
+        const reqId = `req-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+        const projectId = (body.projectId || `proj-${Date.now()}-${Math.floor(Math.random() * 1000)}`).trim();
+
+        // 1. Requirement Understanding Service
+        const requirement = this.services.requirementService.create({
+          id: reqId,
+          clientId, // Authoritative client identity
+          input: userRawInput,
+          createdAt: timestamp,
+        });
+
+        if (requirement.status === "needs_clarification") {
+          return sendJson(200, {
+            success: true,
+            data: {
+              status: "needs_clarification",
+              requirementId: requirement.id,
+              clarificationQuestions: requirement.clarificationQuestions,
+              summary: "Requirement needs clarification before project intake",
+            },
+            timestamp,
+          });
+        }
+
+        // 2. Project Intake Service
+        if (!this.services.projectIntakeService) {
+          throw new ApiError(500, "SERVICE_UNAVAILABLE", "ProjectIntakeService is not configured");
+        }
+
+        const bossId = this.services.bossAgentId ?? this.services.registry.getByRole("boss")[0]?.id;
+        if (!bossId) {
+          throw new ApiError(500, "SERVICE_UNAVAILABLE", "No registered Boss agent available for intake");
+        }
+
+        let intakeResult;
+        try {
+          intakeResult = this.services.projectIntakeService.intake(
+            projectId,
+            bossId,
+            requirement,
+            timestamp
+          );
+        } catch (err: any) {
+          if (err.message && err.message.includes("Project already exists")) {
+            throw new ApiError(409, "PROJECT_EXISTS", `A project with ID '${projectId}' already exists`);
+          }
+          throw err;
+        }
+
+        if (intakeResult.decision === "ACCEPTED" && intakeResult.project) {
+          // Register client project in ClientMonitoringService
+          this.services.monitoringService.registerClientProject(clientId, projectId);
+          if (!authContext.authorizedProjectIds.includes(projectId)) {
+            authContext.authorizedProjectIds.push(projectId);
+          }
+          if (this.services.projectProvider && "registerProject" in this.services.projectProvider) {
+            (this.services.projectProvider as any).registerProject(intakeResult.project);
+          }
+          return sendJson(201, {
+            success: true,
+            data: toSafeProject(intakeResult.project),
+            timestamp,
+          });
+        }
+
+        if (intakeResult.decision === "NEEDS_CLARIFICATION") {
+          return sendJson(200, {
+            success: true,
+            data: {
+              status: "needs_clarification",
+              requirementId: requirement.id,
+              clarificationQuestions: requirement.clarificationQuestions,
+              summary: intakeResult.reason,
+            },
+            timestamp,
+          });
+        }
+
+        throw new ApiError(400, "PROJECT_REJECTED", intakeResult.reason || "Project request rejected");
+      }
+
+      if (method !== "GET") {
+        throw new ApiError(405, "METHOD_NOT_ALLOWED", `Method ${method} not allowed`);
       }
 
       // Authenticate request
